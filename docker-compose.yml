@@ -1,0 +1,52 @@
+# Docker Compose 配置
+# 包含开发和生产两种环境配置
+
+services:
+  # 开发环境
+  app-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - MOCK_MODE=true
+      - NODE_ENV=development
+    env_file:
+      - .env.docker
+    profiles:
+      - dev
+
+  # 生产环境
+  app-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - MOCK_MODE=false
+      - NODE_ENV=production
+    env_file:
+      - .env.docker
+    restart: unless-stopped
+    profiles:
+      - prod
+
+  # Nginx反向代理（生产环境可选）
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - app-prod
+    profiles:
+      - prod-nginx
