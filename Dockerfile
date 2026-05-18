@@ -7,8 +7,7 @@ WORKDIR /app
 
 # 复制依赖文件
 COPY package.json package-lock.json ./
-RUN npm ci --only=production && \
-    npm cache clean --force
+RUN npm ci
 
 # 阶段2: 构建应用
 FROM node:20-alpine AS builder
@@ -20,7 +19,6 @@ COPY . .
 
 # 设置构建时环境变量
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NODE_ENV=production
 
 # 构建应用
 RUN npm run build
