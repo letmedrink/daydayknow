@@ -37,6 +37,37 @@ services:
     profiles:
       - prod
 
+  # FastAPI 后端开发环境
+  backend-dev:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    environment:
+      - MOCK_MODE=true
+    env_file:
+      - ./backend/.env.docker
+    profiles:
+      - dev
+
+  # FastAPI 后端生产环境
+  backend-prod:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MOCK_MODE=false
+    env_file:
+      - ./backend/.env.docker
+    restart: unless-stopped
+    profiles:
+      - prod
+
   # Nginx反向代理（生产环境可选）
   nginx:
     image: nginx:alpine
@@ -48,5 +79,6 @@ services:
       - ./deploy/nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
       - app-prod
+      - backend-prod
     profiles:
       - prod-nginx

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { fetchAPI } from '@/lib/api'
 
 interface StarNode {
   id: string
@@ -78,13 +79,9 @@ export default function StarMapPage() {
         localStorage.setItem('daydayknow_user_id', userId)
       }
 
-      const response = await fetch('/api/star-map', {
+      const data: StarMapData = await fetchAPI('/api/star-map', {
         headers: { 'x-user-id': userId }
       })
-
-      if (!response.ok) throw new Error('获取星图数据失败')
-
-      const data: StarMapData = await response.json()
       setNodes(data.nodes)
       setEdges(data.edges)
       setStats(data.stats)

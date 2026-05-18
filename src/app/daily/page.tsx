@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import TermCard from '@/components/TermCard'
+import { fetchAPI } from '@/lib/api'
 
 interface DailyDocCard {
   term_id: string
@@ -36,12 +37,22 @@ interface DailyDocData {
   can_generate?: boolean
 }
 
+interface GenerateProgress {
+  task_id: string
+  status: string
+  progress: number
+  total: number
+  current_step: string
+  percent: number
+}
+
 export default function DailyPage() {
   const [dailyDoc, setDailyDoc] = useState<DailyDocData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   const [generating, setGenerating] = useState(false)
+  const [generateProgress, setGenerateProgress] = useState<GenerateProgress | null>(null)
 
   const fetchDailyDoc = useCallback(async (date: string) => {
     try {
@@ -55,17 +66,11 @@ export default function DailyPage() {
         localStorage.setItem('daydayknow_user_id', userId)
       }
       
-      const response = await fetch(`/api/daily-doc?date=${date}`, {
+      const data = await fetchAPI(`/api/daily-doc?date=${date}`, {
         headers: {
           'x-user-id': userId
         }
       })
-      
-      if (!response.ok) {
-        throw new Error('获取日报失败')
-      }
-      
-      const data = await response.json()
       setDailyDoc(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误')
@@ -97,36 +102,85 @@ export default function DailyPage() {
     }
   }
 
+  const pollTaskProgress = async (taskId: string, userId: string) => {
+    const maxAttempts = 120 // 最多轮询120次（约2分钟）
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const taskStatus = await fetchAPI(`/api/daily-doc/task/${taskId}`, {
+          headers: { 'x-user-id': userId }
+        })
+        
+        setGenerateProgress({
+          task_id: taskStatus.task_id,
+          status: taskStatus.status,
+          progress: taskStatus.progress || 0,
+          total: taskStatus.total || 0,
+          current_step: taskStatus.current_step || '',
+          percent: taskStatus.percent || 0
+        })
+        
+        if (taskStatus.status === 'completed') {
+          return true
+        }
+        if (taskStatus.status === 'failed') {
+          setError(taskStatus.error || '生成失败')
+          return false
+        }
+        
+        // 等待500ms再轮询
+        await new Promise(resolve => setTimeout(resolve, 500))
+      } catch (err) {
+        console.error('轮询进度失败:', err)
+        // 继续轮询，不中断
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+    return false
+  }
+
   const handleGenerate = async () => {
     try {
       setGenerating(true)
+      setGenerateProgress(null)
       
-      // 获取用户ID
       let userId = localStorage.getItem('daydayknow_user_id')
       if (!userId) {
         userId = 'user_' + Math.random().toString(36).substr(2, 9)
         localStorage.setItem('daydayknow_user_id', userId)
       }
       
-      const response = await fetch('/api/daily-doc/generate', {
+      const result = await fetchAPI('/api/daily-doc/generate', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-user-id': userId
-        },
+        headers: { 'x-user-id': userId },
         body: JSON.stringify({ date: selectedDate })
       })
       
-      if (!response.ok) {
-        throw new Error('生成日报失败')
+      if (result.task_id) {
+        // 立即显示初始进度
+        setGenerateProgress({
+          task_id: result.task_id,
+          status: 'running',
+          progress: 0,
+          total: 0,
+          current_step: '准备中...',
+          percent: 0
+        })
+        // 等待一小段时间让后台任务启动
+        await new Promise(resolve => setTimeout(resolve, 200))
+        // 异步任务，轮询进度
+        const success = await pollTaskProgress(result.task_id, userId)
+        if (success) {
+          await fetchDailyDoc(selectedDate)
+        }
+      } else {
+        // 日报已存在，直接刷新
+        await fetchDailyDoc(selectedDate)
       }
-      
-      // 重新获取日报
-      await fetchDailyDoc(selectedDate)
     } catch (err) {
       setError(err instanceof Error ? err.message : '生成失败')
     } finally {
       setGenerating(false)
+      setGenerateProgress(null)
     }
   }
 
@@ -277,8 +331,39 @@ export default function DailyPage() {
                 disabled={generating}
                 className="w-full py-3 bg-gradient-to-r from-yellow-400 to-orange-500 text-white font-semibold rounded-lg hover:from-yellow-500 hover:to-orange-600 transition-all disabled:opacity-50"
               >
-                {generating ? '生成中...' : '立即生成日报'}
+                {generating ? (
+                  <span className="flex items-center justify-center">
+                    <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
+                    {generateProgress?.current_step || '启动中...'}
+                    {generateProgress && generateProgress.total > 0 && (
+                      <span className="ml-1">({generateProgress.percent}%)</span>
+                    )}
+                  </span>
+                ) : '立即生成日报'}
               </button>
+              
+              {/* 进度条 */}
+              {generating && generateProgress && (
+                <div className="mt-3">
+                  {generateProgress.total > 0 ? (
+                    <>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div 
+                          className="bg-gradient-to-r from-yellow-400 to-orange-500 h-2 rounded-full transition-all duration-300"
+                          style={{ width: `${generateProgress.percent}%` }}
+                        ></div>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1 text-center">
+                        {generateProgress.progress}/{generateProgress.total} 术语已处理
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-500 text-center">
+                      正在查询术语...
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
             
             {/* 收集的术语列表 */}

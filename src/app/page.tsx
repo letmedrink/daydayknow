@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { fetchAPI } from '@/lib/api'
 
 export default function HomePage() {
   const [rawText, setRawText] = useState('')
@@ -22,20 +23,13 @@ export default function HomePage() {
         localStorage.setItem('daydayknow_user_id', userId)
       }
       
-      const response = await fetch('/api/capture', {
+      const result = await fetchAPI('/api/capture', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           'x-user-id': userId
         },
         body: JSON.stringify({ raw_text: rawText })
       })
-
-      if (!response.ok) {
-        throw new Error('捕获失败')
-      }
-
-      const result = await response.json()
       setCaptureResult(result)
       setRawText('')
     } catch (error) {

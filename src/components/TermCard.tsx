@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { fetchAPI } from '@/lib/api'
 
 interface DailyDocCard {
   term_id: string
@@ -58,17 +59,15 @@ export default function TermCard({ card, onConfirm }: TermCardProps) {
         localStorage.setItem('daydayknow_user_id', userId)
       }
       
-      const response = await fetch(`/api/terms/${card.term_id}/confirm`, {
+      await fetchAPI(`/api/terms/${card.term_id}/confirm`, {
         method: 'POST',
         headers: {
           'x-user-id': userId
         }
       })
       
-      if (response.ok) {
-        setIsConfirmed(true)
-        onConfirm(card.term_id)
-      }
+      setIsConfirmed(true)
+      onConfirm(card.term_id)
     } catch (error) {
       console.error('确认失败:', error)
     } finally {
