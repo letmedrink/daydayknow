@@ -16,7 +16,23 @@ fi
 # 安装 Docker
 if ! command -v docker &> /dev/null; then
     echo "正在安装 Docker..."
-    curl -fsSL https://get.docker.com | bash
+    
+    # 检测系统
+    if [ -f /etc/debian_version ]; then
+        # Ubuntu/Debian
+        apt-get update
+        apt-get install -y apt-transport-https ca-certificates curl gnupg
+        curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://mirrors.aliyun.com/docker-ce/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io
+    elif [ -f /etc/redhat-release ]; then
+        # CentOS
+        yum install -y yum-utils
+        yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+        yum install -y docker-ce docker-ce-cli containerd.io
+    fi
+    
     systemctl start docker
     systemctl enable docker
     echo "Docker 安装完成"
@@ -25,7 +41,8 @@ fi
 # 安装 Docker Compose
 if ! command -v docker-compose &> /dev/null; then
     echo "正在安装 Docker Compose..."
-    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    # 使用阿里云镜像
+    curl -L https://mirrors.aliyun.com/docker-toolbox/docker-compose/$(curl -s https://mirrors.aliyun.com/docker-toolbox/docker-compose/ | grep -oP 'docker-compose-linux-x86_64' | tail -1) -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
     echo "Docker Compose 安装完成"
 fi
