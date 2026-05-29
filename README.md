@@ -1,27 +1,29 @@
-# 日知录 (DayDayKnow)
+# 知微 (DayDayKnow)
 
-把昨天遇到的陌生术语，变成今晨一份专属扫盲日报。
+格物致知，见微知著 — AI 知识学习平台。
+
+通过自然对话自动提取知识概念，构建个人知识图谱。
 
 ## 功能特性
 
-- **术语捕获**：从文章中选中句子，分享给日知录
-- **智能提取**：使用LLM自动提取专业术语
-- **日报生成**：次日生成专属扫盲日报（HyDE技术增强）
-- **射箭确认**：滑动卡片确认已掌握
-- **知识星图**：可视化展示术语关联，支持双指缩放和拖拽
-- **多LLM支持**：OpenAI / Claude / 通义千问 / 智谱 / DeepSeek / Ollama
-- **PWA支持**：可安装到主屏幕，离线可用
-- **Docker部署**：支持开发/生产环境一键部署
+- **多 Agent 对话**：Router 意图分类 → 专家角色匹配 → 流式对话
+- **知识提取**：对话结束后自动提取概念和关系，存入知识图谱
+- **知识图谱**：可视化展示概念关联，支持领域筛选、置信度过滤、N 跳邻居
+- **对话管理**：创建 / 重命名 / 删除 / 搜索 / 导出对话
+- **内容导入**：文本 / JSON / CSV 文件批量导入知识
+- **用户画像**：从对话中分析学习风格、认知模式、知识水平
+- **多 LLM 支持**：OpenAI / Claude / DeepSeek / 通义千问 / Ollama
+- **Docker 部署**：PostgreSQL (pgvector) + Redis + ARQ Worker 一键启动
 
 ## 技术栈
 
-- **前端**：Next.js 16 + React 19 + TypeScript + Tailwind CSS v4
-- **后端**：FastAPI (Python) + Uvicorn
-- **数据库**：Supabase (PostgreSQL + pgvector)
-- **LLM**：OpenAI兼容接口，支持多厂商切换
-- **部署**：Docker + Nginx
-- **测试**：Pytest (后端)
-- **PWA**：Service Worker + Web App Manifest
+- **前端**：React 19 + TypeScript + Vite + React Router
+- **后端**：FastAPI + Uvicorn + SQLAlchemy (async)
+- **数据库**：PostgreSQL + pgvector / InMemory（开发模式）
+- **任务队列**：ARQ + Redis（降级为内联执行）
+- **LLM**：OpenAI 兼容接口，支持多厂商切换
+- **测试**：Pytest（236 个测试）
+- **部署**：Docker Compose + Nginx
 
 ## 快速开始
 
@@ -35,116 +37,129 @@ cd daydayknow
 ### 2. 安装依赖
 
 ```bash
-# 前端依赖
-npm install
+# 前端
+cd frontend && npm install && cd ..
 
-# 后端依赖
+# 后端
 cd backend && pip install -r requirements.txt && cd ..
 ```
 
 ### 3. 配置环境变量
 
-**前端**：复制 `.env.example` 为 `.env.local`，填入配置：
+**后端**：复制 `backend/.env.example` 为 `backend/.env`
 
 ```env
-# Supabase配置
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+# 模拟模式（无需外部服务）
+MOCK_MODE=true
 
-# 后端API地址
-NEXT_PUBLIC_API_URL=http://localhost:8000
-
-# 应用配置
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-```
-
-**后端**：复制 `backend/.env.example` 为 `backend/.env.local`，填入配置：
-
-```env
-# Supabase配置
-SUPABASE_URL=your_supabase_url
-SUPABASE_ANON_KEY=your_supabase_anon_key
-
-# LLM配置
+# 或使用真实 LLM
+MOCK_MODE=false
 LLM_PROVIDER=deepseek
 LLM_API_KEY=your_api_key
 
-# 应用配置
-CRON_SECRET=your_cron_secret
+# 可选：PostgreSQL
+DATABASE_URL=postgresql+asyncpg://user:pass@host/db
+
+# 可选：Redis（ARQ 任务队列）
+REDIS_URL=redis://localhost:6379
 ```
 
-### 4. 模拟模式
+**前端**：`frontend/.env`
 
-暂时没有Supabase？设置 `MOCK_MODE=true` 即可使用内存数据库体验全部功能。
+```env
+VITE_API_URL=http://localhost:8000
+```
 
-### 5. 启动
+### 4. 启动
 
 ```bash
-# 启动后端 (端口 8000)
+# 后端（端口 8000）
 cd backend && uvicorn app.main:app --reload --port 8000
 
-# 启动前端 (端口 3000)
-npm run dev
+# 前端（端口 5173）
+cd frontend && npm run dev
 ```
 
-访问 http://localhost:3000
+访问 http://localhost:5173
 
 ## 项目结构
 
 ```
-├── src/                        # Next.js 前端
-│   ├── app/                    # App Router
-│   │   ├── daily/             # 日报阅读页
-│   │   ├── star-map/          # 星图可视化页
-│   │   ├── layout.tsx         # 根布局
-│   │   └── page.tsx           # 主页（捕获页）
-│   ├── components/            # React组件
-│   │   ├── TermCard.tsx       # 术语卡片组件
-│   │   └── PWARegister.tsx    # PWA注册组件
-│   └── lib/                   # 工具库
-│       ├── api.ts             # API请求封装
-│       ├── supabase.ts        # Supabase客户端
-│       └── ...
+├── frontend/                   # React 前端 (Vite)
+│   └── src/
+│       ├── components/
+│       │   ├── ChatWindow.tsx      # 对话界面
+│       │   ├── GraphPage.tsx       # 知识图谱页
+│       │   ├── KnowledgeGraph.tsx  # 图谱可视化
+│       │   ├── ImportPanel.tsx     # 内容导入
+│       │   ├── ProfilePage.tsx     # 用户画像
+│       │   ├── Sidebar.tsx         # 对话列表
+│       │   └── NavRail.tsx         # 导航栏
+│       ├── hooks/
+│       │   ├── useChat.ts          # 对话状态管理
+│       │   └── useConversations.ts # 对话列表管理
+│       ├── lib/
+│       │   └── api.ts              # API 请求封装
+│       └── types/
+│           └── index.ts            # 类型定义
+│
 ├── backend/                    # FastAPI 后端
-│   ├── app/
-│   │   ├── main.py            # FastAPI 应用入口
-│   │   ├── config.py          # 环境变量配置
-│   │   ├── dependencies.py    # 依赖注入
-│   │   ├── models/schemas.py  # Pydantic数据模型
-│   │   ├── routers/           # API路由
-│   │   │   ├── capture.py     # 术语捕获
-│   │   │   ├── daily_doc.py   # 日报获取/生成
-│   │   │   ├── star_map.py    # 星图数据
-│   │   │   ├── terms.py       # 射箭确认
-│   │   │   └── batch.py       # 批处理
-│   │   ├── services/          # 业务逻辑
-│   │   │   ├── supabase_client.py
-│   │   │   ├── mock_supabase.py
-│   │   │   ├── llm_client.py
-│   │   │   └── batch_processor.py
-│   │   └── utils/logger.py    # 日志系统
-│   ├── tests/                 # Pytest测试用例
-│   ├── requirements.txt
-│   └── Dockerfile
-├── docker-compose.yml          # Docker编排
-└── ...
+│   └── app/
+│       ├── main.py             # 应用入口 + 中间件
+│       ├── config.py           # 环境变量配置
+│       ├── dependencies.py     # 依赖注入（用户认证）
+│       ├── errors.py           # 统一错误处理
+│       ├── api/                # API 路由
+│       │   ├── chat.py         # 对话 + 知识图谱 CRUD
+│       │   ├── conversations.py # 对话管理
+│       │   └── import_.py      # 内容导入
+│       ├── agents/             # 多 Agent 系统
+│       │   ├── router_agent.py # 意图分类路由
+│       │   ├── chat_agent.py   # 对话 Agent（流式）
+│       │   ├── extraction_agent.py # 知识提取
+│       │   ├── profile_agent.py # 用户画像分析
+│       │   ├── conflict_agent.py # 知识冲突检测
+│       │   └── orchestrator.py # 后处理编排
+│       ├── db/
+│       │   ├── graph_store.py      # InMemory 存储
+│       │   ├── postgres_store.py   # PostgreSQL 存储
+│       │   └── factory.py          # 存储工厂（单例）
+│       ├── services/
+│       │   ├── llm/            # LLM 供应商
+│       │   ├── embedding/      # 向量嵌入
+│       │   └── auth.py         # JWT 认证
+│       ├── tasks/
+│       │   ├── queue.py        # ARQ 任务队列
+│       │   └── worker.py       # 后台 Worker
+│       ├── models/
+│       │   └── responses.py    # Pydantic 响应模型
+│       └── utils/
+│           └── logger.py       # 结构化日志
+│
+├── docker-compose.yml          # Docker 编排
+└── backend/tests/              # Pytest 测试 (236)
 ```
 
-## API接口
+## API 接口
 
-后端由 FastAPI 提供服务，启动后访问 http://localhost:8000/docs 查看自动生成的 API 文档。
+启动后访问 http://localhost:8000/docs 查看 Swagger 文档。
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/api/capture` | POST | 捕获并提取术语 |
-| `/api/daily-doc` | GET | 获取日报内容 |
-| `/api/daily-doc/generate` | POST | 手动触发日报生成 |
-| `/api/terms/{id}/confirm` | POST | 确认掌握，点亮星图 |
-| `/api/star-map` | GET | 获取星图数据 |
-| `/api/batch` | GET | 批处理健康检查 |
-| `/api/batch` | POST | 批量处理术语（Cron） |
+| `/api/chat` | POST | SSE 流式对话 |
+| `/api/conversations` | GET | 对话列表 |
+| `/api/conversations/{id}` | GET | 对话详情 + 消息 |
+| `/api/conversations/{id}` | PATCH | 重命名对话 |
+| `/api/search` | POST | 搜索知识节点 |
+| `/api/knowledge/{user_id}` | GET | 获取知识图谱 |
+| `/api/knowledge/node/{id}` | GET | 节点详情 + 邻居 |
+| `/api/import` | POST | 文本导入 |
+| `/api/import/batch` | POST | 文件批量导入 |
+| `/api/stats/{user_id}` | GET | 图谱统计 |
+| `/api/profile/{user_id}` | GET | 用户画像 |
+| `/health` | GET | 健康检查 |
 
-### 运行测试
+## 测试
 
 ```bash
 cd backend && python -m pytest tests/ -v
@@ -155,40 +170,15 @@ cd backend && python -m pytest tests/ -v
 ### Docker
 
 ```bash
-# 开发环境（前端 + 后端）
+# 开发环境
 docker compose --profile dev up
 
-# 生产环境（前端 + 后端）
+# 生产环境
 docker compose --profile prod up
 
-# 生产环境 + Nginx反向代理
+# 生产 + Nginx
 docker compose --profile prod-nginx up
 ```
-
-## 待开发功能 (TODO)
-
-- [ ] 用户认证系统（邮箱/手机号登录，替代匿名用户ID）
-- [ ] 术语导入（批量导入历史术语）
-- [ ] 星图节点搜索和筛选（按领域/时间）
-- [ ] 术语复习提醒（基于遗忘曲线）
-- [ ] 术语关联手动标注（自定义连线关系）
-- [ ] 日报分享功能（生成图片/PDF）
-- [ ] 术语详情页（完整学习记录和关联术语）
-- [ ] 星图布局优化（力导向布局算法）
-- [ ] 多语言支持（中英文切换）
-- [ ] 数据导出（JSON/CSV格式）
-- [ ] 深色/浅色主题切换
-- [ ] 移动端手势优化（长按菜单、滑动翻页）
-- [ ] 通知推送（每日日报提醒）
-- [ ] 社交功能（好友星图对比、术语推荐）
-
-## 贡献指南
-
-1. Fork项目
-2. 创建功能分支 (`git checkout -b feature/xxx`)
-3. 提交更改 (`git commit -m 'feat: add xxx'`)
-4. 推送到分支 (`git push origin feature/xxx`)
-5. 创建Pull Request
 
 ## 许可证
 

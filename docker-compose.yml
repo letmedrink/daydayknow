@@ -2,6 +2,55 @@
 # 包含开发和生产两种环境配置
 
 services:
+  # --- 基础设施 ---
+
+  # PostgreSQL + pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: daydayknow
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    profiles:
+      - dev
+      - prod
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    profiles:
+      - dev
+      - prod
+
+  # ARQ Worker
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python worker.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/daydayknow
+    env_file:
+      - ./backend/.env.docker
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    profiles:
+      - dev
+      - prod
+
+  # --- 应用 ---
+
   # 开发环境
   app-dev:
     build:
@@ -48,8 +97,13 @@ services:
       - ./backend:/app
     environment:
       - MOCK_MODE=true
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/daydayknow
     env_file:
       - ./backend/.env.docker
+    depends_on:
+      - redis
+      - postgres
     profiles:
       - dev
 
@@ -62,8 +116,13 @@ services:
       - "8000:8000"
     environment:
       - MOCK_MODE=false
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/daydayknow
     env_file:
       - ./backend/.env.docker
+    depends_on:
+      - redis
+      - postgres
     restart: unless-stopped
     profiles:
       - prod
@@ -82,3 +141,7 @@ services:
       - backend-prod
     profiles:
       - prod-nginx
+
+volumes:
+  pgdata:
+  redisdata:
