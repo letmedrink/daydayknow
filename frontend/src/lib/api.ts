@@ -1,7 +1,12 @@
-import type { SSECallbacks, KgNode, KgEdge, Conversation, ConversationDetail, UserProfile } from '../types';
+import type {
+  SSECallbacks, Conversation, ConversationDetail,
+  WikiPage, WikiGraph, SearchResult, ReviewItem,
+  AppSettings, UserProfile, LLMProvider, GraphInsights,
+} from '../types';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const USER_ID = 'poc_user_001';
+
+// ─── 对话 ──────────────────────────────────────────────────
 
 export async function sendChatMessage(
   message: string,
@@ -11,10 +16,7 @@ export async function sendChatMessage(
 ) {
   const response = await fetch(`${API_BASE}/api/chat`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-user-id': USER_ID,
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, history, conversation_id: conversationId }),
   });
 
@@ -36,104 +38,224 @@ export async function sendChatMessage(
     buffer = lines.pop() || '';
 
     for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const event = JSON.parse(line.slice(6));
-          if (event.type === 'chunk') callbacks.onChunk(event.content);
-          else if (event.type === 'done') callbacks.onDone(event.conversation_id);
-          else if (event.type === 'extraction')
-            callbacks.onExtraction(event.nodes, event.edges);
-          else if (event.type === 'profile' && callbacks.onProfile)
-            callbacks.onProfile();
-          else if (event.type === 'conflict' && callbacks.onConflict)
-            callbacks.onConflict(event.conflicts);
-          else if (event.type === 'task_enqueued' && callbacks.onTaskEnqueued)
-            callbacks.onTaskEnqueued(event.task_id, event.conversation_id);
-        } catch (e) {
-          console.warn('SSE parse error:', e, line.slice(6, 120));
-        }
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const event = JSON.parse(line.slice(6));
+        if (event.type === 'chunk') callbacks.onChunk(event.content);
+        else if (event.type === 'done') callbacks.onDone(event.conversation_id);
+        else if (event.type === 'options') callbacks.onOptions(event.options);
+        else if (event.type === 'references') callbacks.onReferences(event.references);
+      } catch (e) {
+        console.warn('SSE parse error:', e);
       }
     }
   }
 }
 
-export async function pollTaskResult(
-  taskId: string,
-  onResult: (result: { nodes: KgNode[]; edges: KgEdge[] }) => void,
-  maxAttempts = 30,
-) {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((r) => setTimeout(r, 1000));
-    try {
-      const resp = await fetch(`${API_BASE}/api/tasks/${taskId}`);
-      if (!resp.ok) continue;
-      const data = await resp.json();
-      if (data.status === 'completed' && data.result) {
-        onResult({
-          nodes: data.result.nodes || [],
-          edges: data.result.edges || [],
-        });
-        return;
-      }
-      if (data.status === 'failed') {
-        console.warn('Task failed:', data);
-        return;
-      }
-    } catch (e) {
-      console.warn('Task poll error:', e);
-    }
-  }
-  console.warn('Task poll timed out:', taskId);
-}
-
-export async function fetchKnowledge(): Promise<{ nodes: KgNode[]; edges: KgEdge[] }> {
-  const response = await fetch(`${API_BASE}/api/knowledge/${USER_ID}`);
-  if (!response.ok) throw new Error(`Failed to fetch knowledge: ${response.status}`);
-  return response.json();
-}
-
-export async function fetchConversations(limit = 50): Promise<Conversation[]> {
-  const response = await fetch(`${API_BASE}/api/conversations?limit=${limit}`, {
-    headers: { 'x-user-id': USER_ID },
-  });
-  if (!response.ok) throw new Error(`Failed to fetch conversations: ${response.status}`);
-  return response.json();
+export async function fetchConversations(): Promise<Conversation[]> {
+  const resp = await fetch(`${API_BASE}/api/conversations`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data || data;
 }
 
 export async function fetchConversation(id: string): Promise<ConversationDetail> {
-  const response = await fetch(`${API_BASE}/api/conversations/${id}`, {
-    headers: { 'x-user-id': USER_ID },
-  });
-  if (!response.ok) throw new Error(`Failed to fetch conversation: ${response.status}`);
-  return response.json();
+  const resp = await fetch(`${API_BASE}/api/conversations/${id}`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data || data;
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/conversations/${id}`, {
-    method: 'DELETE',
-    headers: { 'x-user-id': USER_ID },
-  });
-  if (!response.ok) throw new Error(`Failed to delete conversation: ${response.status}`);
+  const resp = await fetch(`${API_BASE}/api/conversations/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
 }
 
-export async function importContent(content: string, sourceName?: string): Promise<{ nodes: KgNode[]; edges: KgEdge[]; error?: string }> {
-  const response = await fetch(`${API_BASE}/api/import`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-user-id': USER_ID,
-    },
-    body: JSON.stringify({ content, source_name: sourceName }),
-  });
-  if (!response.ok) throw new Error(`Import failed: ${response.status}`);
-  return response.json();
+// ─── Wiki ──────────────────────────────────────────────────
+
+export async function fetchWikiPages(): Promise<{ tree: WikiPage[]; pages: WikiPage[] }> {
+  const resp = await fetch(`${API_BASE}/api/wiki/pages`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
 }
+
+export async function fetchWikiPage(path: string): Promise<any> {
+  const resp = await fetch(`${API_BASE}/api/wiki/page?path=${encodeURIComponent(path)}`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function deleteWikiPage(path: string): Promise<void> {
+  const resp = await fetch(`${API_BASE}/api/wiki/page?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+}
+
+export async function fetchWikiGraph(): Promise<WikiGraph> {
+  const resp = await fetch(`${API_BASE}/api/wiki/graph`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function fetchGraphInsights(): Promise<GraphInsights> {
+  const resp = await fetch(`${API_BASE}/api/wiki/graph/insights`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function searchGraph(query: string): Promise<{ nodes: any[]; edges: any[] }> {
+  const resp = await fetch(`${API_BASE}/api/wiki/graph/search?q=${encodeURIComponent(query)}`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function searchWiki(query: string, limit = 10): Promise<SearchResult[]> {
+  const resp = await fetch(`${API_BASE}/api/wiki/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+// ─── 摄入 ──────────────────────────────────────────────────
+
+export async function ingestFile(file: File, onProgress: (evt: any) => void): Promise<any> {
+  const form = new FormData();
+  form.append('file', file);
+
+  const resp = await fetch(`${API_BASE}/api/ingest`, { method: 'POST', body: form });
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let result = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const event = JSON.parse(line.slice(6));
+        if (event.type === 'progress') onProgress(event);
+        else if (event.type === 'done') result = event.result;
+        else if (event.type === 'error') throw new Error(event.error);
+      } catch (e) {
+        if ((e as Error).message !== 'Failed: ' + (e as any).status) throw e;
+      }
+    }
+  }
+
+  return result;
+}
+
+// ─── 研究 ──────────────────────────────────────────────────
+
+export async function deepResearch(topic: string, keywords?: string[], onProgress?: (evt: any) => void): Promise<any> {
+  const resp = await fetch(`${API_BASE}/api/research`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ topic, keywords }),
+  });
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let result = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const event = JSON.parse(line.slice(6));
+        if (event.type === 'progress' && onProgress) onProgress(event);
+        else if (event.type === 'done') result = event.result;
+        else if (event.type === 'error') throw new Error(event.error);
+      } catch (e) {
+        if ((e as Error).message?.startsWith('Failed')) throw e;
+      }
+    }
+  }
+
+  return result;
+}
+
+// ─── 审阅项 ────────────────────────────────────────────────
+
+export async function fetchReviews(): Promise<ReviewItem[]> {
+  const resp = await fetch(`${API_BASE}/api/reviews`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function resolveReview(id: string, action: string): Promise<void> {
+  const resp = await fetch(`${API_BASE}/api/reviews/${id}/resolve?action=${encodeURIComponent(action)}`, { method: 'POST' });
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+}
+
+// ─── 设置 ──────────────────────────────────────────────────
+
+export async function fetchSettings(): Promise<AppSettings> {
+  const resp = await fetch(`${API_BASE}/api/settings`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function updateSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
+  const resp = await fetch(`${API_BASE}/api/settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function testLLMConnection(provider: LLMProvider): Promise<{ success: boolean; data?: any; error?: string }> {
+  const resp = await fetch(`${API_BASE}/api/settings/test-connection`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(provider),
+  });
+  return resp.json();
+}
+
+// ─── 用户画像 ──────────────────────────────────────────────
 
 export async function fetchProfile(): Promise<UserProfile | null> {
-  const response = await fetch(`${API_BASE}/api/profile/${USER_ID}`, {
-    headers: { 'x-user-id': USER_ID },
+  const resp = await fetch(`${API_BASE}/api/settings/profile`);
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function updateProfile(profile: Partial<UserProfile>): Promise<UserProfile> {
+  const resp = await fetch(`${API_BASE}/api/settings/profile`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
   });
-  if (!response.ok) throw new Error(`Failed to fetch profile: ${response.status}`);
-  const data = await response.json();
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
   return data.data;
 }

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { KnowledgeGraph } from './KnowledgeGraph';
-import type { KgNode, KgEdge, Message } from '../types';
+import { GuidedOptions } from './GuidedOptions';
+import type { Message, GuidedOption, WikiReference } from '../types';
 
 function MarkdownContent({ content }: { content: string }) {
   return (
@@ -13,17 +13,11 @@ function MarkdownContent({ content }: { content: string }) {
             if (isBlock) {
               return (
                 <pre style={styles.codeBlock}>
-                  <code className={className} {...props}>
-                    {children}
-                  </code>
+                  <code className={className} {...props}>{children}</code>
                 </pre>
               );
             }
-            return (
-              <code style={styles.inlineCode} {...props}>
-                {children}
-              </code>
-            );
+            return <code style={styles.inlineCode} {...props}>{children}</code>;
           },
           p({ children }) { return <p style={styles.mdP}>{children}</p>; },
           ul({ children }) { return <ul style={styles.mdList}>{children}</ul>; },
@@ -47,31 +41,31 @@ interface ChatWindowProps {
   messages: Message[];
   streamingContent: string;
   isLoading: boolean;
-  extractionNodes: KgNode[];
-  extractionEdges: KgEdge[];
   sendMessage: (content: string) => void;
+  currentOptions: GuidedOption[];
+  currentReferences: WikiReference[];
 }
 
-export function ChatWindow({ messages, streamingContent, isLoading, extractionNodes, extractionEdges, sendMessage }: ChatWindowProps) {
+export function ChatWindow({
+  messages, streamingContent, isLoading, sendMessage,
+  currentOptions, currentReferences,
+}: ChatWindowProps) {
   const [input, setInput] = useState('');
-  const [graphOpen, setGraphOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
 
-  useEffect(() => {
-    if (extractionNodes.length > 0) {
-      setGraphOpen(true);
-    }
-  }, [extractionNodes]);
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
     sendMessage(input);
     setInput('');
+  };
+
+  const handleOptionSelect = (opt: GuidedOption) => {
+    sendMessage(opt.action);
   };
 
   return (
@@ -84,8 +78,8 @@ export function ChatWindow({ messages, streamingContent, isLoading, extractionNo
       <div style={styles.messagesContainer}>
         {messages.length === 0 && !streamingContent && (
           <div style={styles.emptyState}>
-            <p>输入任意问题开始对话</p>
-            <p style={styles.hint}>对话结束后系统会自动提取知识概念</p>
+            <p style={{ fontSize: 16, marginBottom: 8 }}>输入任意问题开始对话</p>
+            <p style={styles.hint}>AI 会基于你的知识库回答，并引导你深入学习</p>
           </div>
         )}
 
@@ -98,17 +92,29 @@ export function ChatWindow({ messages, streamingContent, isLoading, extractionNo
             }}
           >
             <div style={styles.messageRole}>
-              {msg.role === 'user' ? '你' : 'AI'}
+              {msg.role === 'user' ? '你' : '知微'}
             </div>
             <div style={styles.messageContent}>
               {msg.role === 'user' ? msg.content : <MarkdownContent content={msg.content} />}
             </div>
+            {/* 引用的 wiki 页面 */}
+            {msg.role === 'assistant' && msg.references && msg.references.length > 0 && (
+              <div style={styles.references}>
+                参考: {msg.references.map((ref, ri) => (
+                  <span key={ri} style={styles.refTag}>{ref.title}</span>
+                ))}
+              </div>
+            )}
+            {/* 引导选项 */}
+            {msg.role === 'assistant' && msg.options && msg.options.length > 0 && i === messages.length - 1 && !streamingContent && (
+              <GuidedOptions options={msg.options} onSelect={handleOptionSelect} disabled={isLoading} />
+            )}
           </div>
         ))}
 
         {streamingContent && (
           <div style={{ ...styles.message, ...styles.assistantMessage }}>
-            <div style={styles.messageRole}>AI</div>
+            <div style={styles.messageRole}>知微</div>
             <div style={styles.messageContent}>
               <MarkdownContent content={streamingContent} />
               <span style={styles.cursor}>|</span>
@@ -119,13 +125,20 @@ export function ChatWindow({ messages, streamingContent, isLoading, extractionNo
         <div ref={messagesEndRef} />
       </div>
 
-      {extractionNodes.length > 0 && (
-        <div
-          style={{ ...styles.extractionBanner, cursor: 'pointer' }}
-          onClick={() => setGraphOpen(!graphOpen)}
-        >
-          本轮提取 {extractionNodes.length} 个概念，{extractionEdges.length} 条关系
-          {graphOpen ? ' ▲ 收起图谱' : ' ▼ 查看图谱'}
+      {/* 流式结束后的引导选项 */}
+      {!streamingContent && currentOptions.length > 0 && messages.length > 0 && !isLoading && (
+        <div style={styles.optionsBar}>
+          <GuidedOptions options={currentOptions} onSelect={handleOptionSelect} disabled={isLoading} />
+        </div>
+      )}
+
+      {/* 引用面板 */}
+      {currentReferences.length > 0 && !streamingContent && (
+        <div style={styles.refsBar}>
+          <span style={styles.refsLabel}>引用知识:</span>
+          {currentReferences.map((ref, i) => (
+            <span key={i} style={styles.refTag}>{ref.title}</span>
+          ))}
         </div>
       )}
 
@@ -145,12 +158,6 @@ export function ChatWindow({ messages, streamingContent, isLoading, extractionNo
           {isLoading ? '生成中...' : '发送'}
         </button>
       </form>
-
-      {graphOpen && extractionNodes.length > 0 && (
-        <div style={styles.graphContainer}>
-          <KnowledgeGraph nodes={extractionNodes} edges={extractionEdges} height={250} />
-        </div>
-      )}
     </div>
   );
 }
@@ -204,19 +211,43 @@ const styles: Record<string, React.CSSProperties> = {
   },
   messageRole: { fontSize: 11, fontWeight: 600, marginBottom: 4, opacity: 0.7 },
   messageContent: { fontSize: 14, lineHeight: 1.6 },
-  cursor: {
-    animation: 'blink 1s infinite',
-    fontWeight: 300,
+  references: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 8,
+    paddingTop: 8,
+    borderTop: '1px solid #d5ccc3',
+    fontSize: 12,
+    color: '#8a8078',
   },
-  extractionBanner: {
-    padding: '8px 20px',
-    backgroundColor: '#e8e3d5',
-    color: '#6b7d6b',
-    fontSize: 13,
-    textAlign: 'center',
-    borderTop: '1px solid #d0c9be',
-    borderBottom: '1px solid #d0c9be',
+  refTag: {
+    padding: '2px 8px',
+    backgroundColor: '#d5ccc3',
+    borderRadius: 10,
+    fontSize: 11,
+    color: '#6b5b4f',
   },
+  optionsBar: {
+    padding: '4px 20px 8px',
+    maxWidth: 700,
+    margin: '0 auto',
+    width: '100%',
+    boxSizing: 'border-box',
+  },
+  refsBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '4px 20px',
+    maxWidth: 700,
+    margin: '0 auto',
+    width: '100%',
+    boxSizing: 'border-box',
+    fontSize: 12,
+    color: '#8a8078',
+  },
+  refsLabel: { fontSize: 12, color: '#a09890' },
   inputArea: {
     display: 'flex',
     gap: 8,
@@ -244,12 +275,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     cursor: 'pointer',
   },
-  graphContainer: {
-    padding: '12px 20px',
-    borderTop: '1px solid #d5ccc3',
-    backgroundColor: '#eae3db',
-    height: 300,
-  },
+  cursor: { animation: 'blink 1s infinite', fontWeight: 300 },
   markdownContent: {},
   codeBlock: {
     backgroundColor: '#4a443d',
@@ -279,11 +305,7 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '8px 0',
     color: '#8a8078',
   },
-  mdTable: {
-    borderCollapse: 'collapse',
-    margin: '8px 0',
-    fontSize: 13,
-  },
+  mdTable: { borderCollapse: 'collapse', margin: '8px 0', fontSize: 13 },
   mdTh: {
     border: '1px solid #d5ccc3',
     padding: '6px 10px',
@@ -291,8 +313,5 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     textAlign: 'left',
   },
-  mdTd: {
-    border: '1px solid #d5ccc3',
-    padding: '6px 10px',
-  },
+  mdTd: { border: '1px solid #d5ccc3', padding: '6px 10px' },
 };

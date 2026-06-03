@@ -1,89 +1,102 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
-import { fetchKnowledge } from '../lib/api';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { fetchWikiGraph, searchGraph, deepResearch } from '../lib/api';
 import { KnowledgeGraph } from './KnowledgeGraph';
-import type { KgNode, KgEdge } from '../types';
+import { GraphInsights } from './GraphInsights';
+import type { WikiGraphNode, WikiGraphEdge, WikiGraphCommunity } from '../types';
 
 export function GraphPage() {
-  const [allNodes, setAllNodes] = useState<KgNode[]>([]);
-  const [allEdges, setAllEdges] = useState<KgEdge[]>([]);
+  const [allNodes, setAllNodes] = useState<WikiGraphNode[]>([]);
+  const [allEdges, setAllEdges] = useState<WikiGraphEdge[]>([]);
+  const [communities, setCommunities] = useState<WikiGraphCommunity[]>([]);
+  const [maxLinks, setMaxLinks] = useState(1);
   const [loading, setLoading] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Filter state
-  const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
-  const [minConfidence, setMinConfidence] = useState(0);
-  const [selectedRelations, setSelectedRelations] = useState<Set<string>>(new Set());
-
-  // N-hop highlight state
+  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [highlight, setHighlight] = useState<{ nodeId: string; hop: number } | null>(null);
   const [currentHop, setCurrentHop] = useState(1);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Set<string>>(new Set());
+  const [hideIsolated, setHideIsolated] = useState(false);
+  const [showInsights, setShowInsights] = useState(false);
 
   useEffect(() => {
-    fetchKnowledge()
+    fetchWikiGraph()
       .then((data) => {
         setAllNodes(data.nodes);
         setAllEdges(data.edges);
-        // Initialize filters to include all
-        const domains = new Set<string>();
-        const relations = new Set<string>();
-        data.nodes.forEach((n) => { if (n.domain) domains.add(n.domain); });
-        data.edges.forEach((e) => relations.add(e.relation_type));
-        setSelectedDomains(domains);
-        setSelectedRelations(relations);
+        setCommunities(data.communities || []);
+        setMaxLinks(data.maxLinks || 1);
+        const types = new Set<string>();
+        data.nodes.forEach((n) => types.add(n.type));
+        setSelectedTypes(types);
       })
-      .catch((err) => console.error('Failed to load knowledge:', err))
+      .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
-  // Extract unique domains and relations for filter UI
-  const domains = useMemo(() => {
-    const d = new Set<string>();
-    allNodes.forEach((n) => { if (n.domain) d.add(n.domain); });
-    return [...d].sort();
+  const types = useMemo(() => {
+    const t = new Set<string>();
+    allNodes.forEach((n) => t.add(n.type));
+    return [...t].sort();
   }, [allNodes]);
 
-  const relations = useMemo(() => {
-    const r = new Set<string>();
-    allEdges.forEach((e) => r.add(e.relation_type));
-    return [...r].sort();
-  }, [allEdges]);
+  // 搜索
+  const handleSearch = useCallback(async (q: string) => {
+    setSearchQuery(q);
+    if (!q.trim()) {
+      setSearchResults(new Set());
+      return;
+    }
+    try {
+      const result = await searchGraph(q);
+      setSearchResults(new Set(result.nodes.map((n: any) => n.id)));
+    } catch {
+      setSearchResults(new Set());
+    }
+  }, []);
 
-  // Apply filters
+  // 过滤
   const filteredNodes = useMemo(() => {
-    return allNodes.filter((n) => {
-      if (n.domain && !selectedDomains.has(n.domain)) return false;
-      if (n.confidence < minConfidence) return false;
-      return true;
-    });
-  }, [allNodes, selectedDomains, minConfidence]);
+    let nodes = allNodes.filter((n) => selectedTypes.has(n.type));
+
+    // 隐藏孤立节点
+    if (hideIsolated) {
+      const connectedIds = new Set<string>();
+      for (const e of allEdges) {
+        connectedIds.add(e.source);
+        connectedIds.add(e.target);
+      }
+      nodes = nodes.filter((n) => connectedIds.has(n.id));
+    }
+
+    return nodes;
+  }, [allNodes, selectedTypes, hideIsolated, allEdges]);
 
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
 
   const filteredEdges = useMemo(() => {
-    return allEdges.filter((e) => {
-      if (!filteredNodeIds.has(e.from_node_id) || !filteredNodeIds.has(e.to_node_id)) return false;
-      if (!selectedRelations.has(e.relation_type)) return false;
-      return true;
-    });
-  }, [allEdges, filteredNodeIds, selectedRelations]);
+    return allEdges.filter((e) => filteredNodeIds.has(e.source) && filteredNodeIds.has(e.target));
+  }, [allEdges, filteredNodeIds]);
 
-  const toggleDomain = (d: string) => {
-    setSelectedDomains((prev) => {
-      const next = new Set(prev);
-      if (next.has(d)) next.delete(d); else next.add(d);
-      return next;
-    });
-  };
+  // 搜索高亮
+  const effectiveHighlight = useMemo(() => {
+    if (searchResults.size > 0) {
+      return { nodeId: [...searchResults][0], hop: 0, searchIds: searchResults };
+    }
+    return highlight;
+  }, [searchResults, highlight]);
 
-  const toggleRelation = (r: string) => {
-    setSelectedRelations((prev) => {
+  const toggleType = (t: string) => {
+    setSelectedTypes((prev) => {
       const next = new Set(prev);
-      if (next.has(r)) next.delete(r); else next.add(r);
+      if (next.has(t)) next.delete(t); else next.add(t);
       return next;
     });
   };
 
   const handleNodeClick = (nodeId: string) => {
+    setSearchResults(new Set());
     setCurrentHop(1);
     setHighlight({ nodeId, hop: 1 });
   };
@@ -91,6 +104,8 @@ export function GraphPage() {
   const handleResetHighlight = () => {
     setHighlight(null);
     setCurrentHop(1);
+    setSearchResults(new Set());
+    setSearchQuery('');
   };
 
   const handleHopChange = (hop: number) => {
@@ -100,6 +115,16 @@ export function GraphPage() {
     }
   };
 
+  const handleResearchFromInsights = (query: string) => {
+    deepResearch(query).catch(console.error);
+  };
+
+  const handleHighlightFromInsights = (nodeId: string) => {
+    setSearchResults(new Set());
+    setCurrentHop(1);
+    setHighlight({ nodeId, hop: 1 });
+  };
+
   const highlightedNode = highlight ? allNodes.find((n) => n.id === highlight.nodeId) : null;
 
   return (
@@ -107,69 +132,66 @@ export function GraphPage() {
       <div style={styles.header}>
         <h1 style={styles.title}>知识图谱</h1>
         <span style={styles.stats}>
-          {filteredNodes.length}/{allNodes.length} 个概念，{filteredEdges.length}/{allEdges.length} 条关系
+          {filteredNodes.length}/{allNodes.length} 个节点，{filteredEdges.length}/{allEdges.length} 条关系
         </span>
       </div>
 
-      {/* Filter toolbar */}
       {!loading && allNodes.length > 0 && (
         <div style={styles.toolbar}>
-          {/* Domain filter */}
-          {domains.length > 0 && (
-            <div style={styles.filterGroup}>
-              <span style={styles.filterLabel}>领域:</span>
-              {domains.map((d) => (
-                <label key={d} style={styles.checkLabel}>
-                  <input
-                    type="checkbox"
-                    checked={selectedDomains.has(d)}
-                    onChange={() => toggleDomain(d)}
-                    style={styles.checkbox}
-                  />
-                  {d}
-                </label>
-              ))}
-            </div>
-          )}
-
-          {/* Confidence slider */}
-          <div style={styles.filterGroup}>
-            <span style={styles.filterLabel}>置信度 ≥ {minConfidence.toFixed(1)}</span>
+          {/* 搜索 */}
+          <div style={styles.searchBox}>
             <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.1}
-              value={minConfidence}
-              onChange={(e) => setMinConfidence(parseFloat(e.target.value))}
-              style={styles.slider}
+              style={styles.searchInput}
+              placeholder="搜索节点..."
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
             />
+            {searchResults.size > 0 && (
+              <span style={styles.searchCount}>{searchResults.size} 个匹配</span>
+            )}
           </div>
 
-          {/* Relation type filter */}
-          {relations.length > 0 && (
+          {/* 类型过滤 */}
+          {types.length > 0 && (
             <div style={styles.filterGroup}>
-              <span style={styles.filterLabel}>关系:</span>
-              {relations.map((r) => (
-                <label key={r} style={styles.checkLabel}>
+              <span style={styles.filterLabel}>类型:</span>
+              {types.map((t) => (
+                <label key={t} style={styles.checkLabel}>
                   <input
                     type="checkbox"
-                    checked={selectedRelations.has(r)}
-                    onChange={() => toggleRelation(r)}
+                    checked={selectedTypes.has(t)}
+                    onChange={() => toggleType(t)}
                     style={styles.checkbox}
                   />
-                  {r}
+                  {t}
                 </label>
               ))}
             </div>
           )}
 
-          {/* N-hop controls */}
+          {/* 过滤选项 */}
+          <div style={styles.filterGroup}>
+            <label style={styles.checkLabel}>
+              <input
+                type="checkbox"
+                checked={hideIsolated}
+                onChange={() => setHideIsolated(!hideIsolated)}
+                style={styles.checkbox}
+              />
+              隐藏孤立节点
+            </label>
+            <button
+              style={{ ...styles.hopBtn, ...(showInsights ? styles.hopBtnActive : {}) }}
+              onClick={() => setShowInsights(!showInsights)}
+            >
+              洞察
+            </button>
+          </div>
+
+          {/* 高亮控制 */}
           {highlightedNode && (
             <div style={styles.filterGroup}>
-              <span style={styles.filterLabel}>
-                查看「{highlightedNode.name}」的
-              </span>
+              <span style={styles.filterLabel}>查看「{highlightedNode.title}」的</span>
               <button
                 style={{ ...styles.hopBtn, ...(currentHop === 1 ? styles.hopBtnActive : {}) }}
                 onClick={() => handleHopChange(1)}
@@ -182,34 +204,39 @@ export function GraphPage() {
               >
                 2 跳邻居
               </button>
-              <button style={styles.resetBtn} onClick={handleResetHighlight}>
-                重置
-              </button>
+              <button style={styles.resetBtn} onClick={handleResetHighlight}>重置</button>
             </div>
           )}
         </div>
       )}
 
-      <div style={styles.graphArea}>
-        {loading ? (
-          <div style={styles.center}>加载中...</div>
-        ) : filteredNodes.length === 0 ? (
-          <div style={styles.center}>
-            <p style={styles.emptyTitle}>{allNodes.length === 0 ? '暂无知识图谱' : '无匹配结果'}</p>
-            <p style={styles.emptyHint}>
-              {allNodes.length === 0
-                ? '对话结束后系统会自动提取概念和关系'
-                : '尝试调整筛选条件'}
-            </p>
-          </div>
-        ) : (
-          <KnowledgeGraph
-            nodes={filteredNodes}
-            edges={filteredEdges}
-            height={(containerRef.current?.clientHeight || 600) - 60 - (highlightedNode ? 40 : 0)}
-            highlight={highlight}
-            onNodeClick={handleNodeClick}
-            onResetHighlight={handleResetHighlight}
+      <div style={styles.mainArea}>
+        <div style={styles.graphArea}>
+          {loading ? (
+            <div style={styles.center}>加载中...</div>
+          ) : filteredNodes.length === 0 ? (
+            <div style={styles.center}>
+              <p style={styles.emptyTitle}>{allNodes.length === 0 ? '暂无知识图谱' : '无匹配结果'}</p>
+              <p style={styles.emptyHint}>
+                {allNodes.length === 0 ? '上传文档或对话后自动生成知识图谱' : '尝试调整筛选条件'}
+              </p>
+            </div>
+          ) : (
+            <KnowledgeGraph
+              nodes={filteredNodes}
+              edges={filteredEdges}
+              height={(containerRef.current?.clientHeight || 600) - 60}
+              highlight={effectiveHighlight}
+              onNodeClick={handleNodeClick}
+              onResetHighlight={handleResetHighlight}
+            />
+          )}
+        </div>
+
+        {showInsights && allNodes.length > 0 && (
+          <GraphInsights
+            onResearchClick={handleResearchFromInsights}
+            onNodeHighlight={handleHighlightFromInsights}
           />
         )}
       </div>
@@ -218,106 +245,42 @@ export function GraphPage() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
-    flex: 1,
-    height: '100vh',
-    display: 'flex',
-    flexDirection: 'column',
-    backgroundColor: '#f5f0eb',
-  },
+  container: { flex: 1, height: '100vh', display: 'flex', flexDirection: 'column', backgroundColor: '#f5f0eb' },
   header: {
-    display: 'flex',
-    alignItems: 'baseline',
-    gap: 12,
-    padding: '16px 20px',
-    borderBottom: '1px solid #d5ccc3',
-    backgroundColor: '#eae3db',
+    display: 'flex', alignItems: 'baseline', gap: 12,
+    padding: '16px 20px', borderBottom: '1px solid #d5ccc3', backgroundColor: '#eae3db',
   },
-  title: {
-    fontSize: 18,
-    fontWeight: 700,
-    color: '#4a443d',
-    margin: 0,
-  },
-  stats: {
-    fontSize: 13,
-    color: '#8a8078',
-  },
+  title: { fontSize: 18, fontWeight: 700, color: '#4a443d', margin: 0 },
+  stats: { fontSize: 13, color: '#8a8078' },
   toolbar: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: '4px 16px',
-    padding: '8px 20px',
-    borderBottom: '1px solid #e0d9d2',
-    backgroundColor: '#ece6df',
-    fontSize: 12,
+    display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 16px',
+    padding: '8px 20px', borderBottom: '1px solid #e0d9d2', backgroundColor: '#ece6df', fontSize: 12,
   },
-  filterGroup: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    flexWrap: 'wrap',
+  searchBox: { display: 'flex', alignItems: 'center', gap: 6 },
+  searchInput: {
+    padding: '4px 8px', border: '1px solid #c8bfb5', borderRadius: 4,
+    fontSize: 12, backgroundColor: '#f5f0eb', color: '#4a443d', outline: 'none', width: 140,
   },
-  filterLabel: {
-    fontWeight: 500,
-    color: '#58524a',
-    whiteSpace: 'nowrap' as const,
-  },
+  searchCount: { fontSize: 11, color: '#8a8078' },
+  filterGroup: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  filterLabel: { fontWeight: 500, color: '#58524a', whiteSpace: 'nowrap' as const },
   checkLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 3,
-    color: '#58524a',
-    cursor: 'pointer',
-    padding: '2px 6px',
-    borderRadius: 4,
-    backgroundColor: '#f5f0eb',
-    fontSize: 12,
+    display: 'flex', alignItems: 'center', gap: 3, color: '#58524a',
+    cursor: 'pointer', padding: '2px 6px', borderRadius: 4, backgroundColor: '#f5f0eb', fontSize: 12,
   },
-  checkbox: {
-    accentColor: '#7a8b8f',
-    margin: 0,
-  },
-  slider: {
-    width: 80,
-    accentColor: '#7a8b8f',
-  },
+  checkbox: { accentColor: '#7a8b8f', margin: 0 },
   hopBtn: {
-    padding: '3px 10px',
-    border: '1px solid #d5cec6',
-    borderRadius: 4,
-    backgroundColor: '#f5f0eb',
-    color: '#58524a',
-    cursor: 'pointer',
-    fontSize: 12,
+    padding: '3px 10px', border: '1px solid #d5cec6', borderRadius: 4,
+    backgroundColor: '#f5f0eb', color: '#58524a', cursor: 'pointer', fontSize: 12,
   },
-  hopBtnActive: {
-    backgroundColor: '#7a8b8f',
-    color: '#f5f0eb',
-    borderColor: '#7a8b8f',
-  },
+  hopBtnActive: { backgroundColor: '#7a8b8f', color: '#f5f0eb', borderColor: '#7a8b8f' },
   resetBtn: {
-    padding: '3px 10px',
-    border: '1px solid #c97a6b',
-    borderRadius: 4,
-    backgroundColor: 'transparent',
-    color: '#c97a6b',
-    cursor: 'pointer',
-    fontSize: 12,
+    padding: '3px 10px', border: '1px solid #c97a6b', borderRadius: 4,
+    backgroundColor: 'transparent', color: '#c97a6b', cursor: 'pointer', fontSize: 12,
   },
-  graphArea: {
-    flex: 1,
-    overflow: 'hidden',
-  },
-  center: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '100%',
-    color: '#a09890',
-  },
+  mainArea: { flex: 1, display: 'flex', overflow: 'hidden' },
+  graphArea: { flex: 1, overflow: 'hidden' },
+  center: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#a09890' },
   emptyTitle: { fontSize: 16, fontWeight: 600, color: '#8a8078', margin: 0 },
   emptyHint: { fontSize: 13, marginTop: 8 },
 };

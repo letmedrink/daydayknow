@@ -9,42 +9,37 @@ if (env_dir / ".env.local").exists():
 else:
     load_dotenv(env_dir / ".env")
 
+
 class Settings:
     """应用配置"""
-    
-    # 模拟模式
-    MOCK_MODE: bool = os.getenv("MOCK_MODE", "true").lower() == "true"
-    
-    # Supabase
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
-    SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
-    
-    # LLM
+
+    # 数据目录（所有持久化数据存储位置）
+    DATA_DIR: str = os.getenv("DATA_DIR", str(env_dir / "data"))
+
+    # LLM 默认配置（可在前端设置页面动态覆盖）
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai")
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
-    LLM_MODEL_LEVEL: str = os.getenv("LLM_MODEL_LEVEL", "fast")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "")
-    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "2000"))
+    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "4096"))
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
-    
-    # PostgreSQL
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
-    # Embedding
-    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "mock")
-    EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", "")
-    EMBEDDING_BASE_URL: str = os.getenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
-    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    EMBEDDING_SIMILARITY_THRESHOLD: float = float(os.getenv("EMBEDDING_SIMILARITY_THRESHOLD", "0.85"))
+    # 多模态模型（图片描述用）
+    MULTIMODAL_MODEL: str = os.getenv("MULTIMODAL_MODEL", "")
+    MULTIMODAL_API_KEY: str = os.getenv("MULTIMODAL_API_KEY", "")
+    MULTIMODAL_BASE_URL: str = os.getenv("MULTIMODAL_BASE_URL", "")
 
-    # Redis / ARQ
-    REDIS_URL: str = os.getenv("REDIS_URL", "")
+    # 搜索 API（Deep Research 用）
+    SEARCH_API_PROVIDER: str = os.getenv("SEARCH_API_PROVIDER", "")  # tavily / serpapi / searxng
+    SEARCH_API_KEY: str = os.getenv("SEARCH_API_KEY", "")
+    SEARCH_API_BASE_URL: str = os.getenv("SEARCH_API_BASE_URL", "")
 
     # 应用配置
     APP_URL: str = os.getenv("APP_URL", "http://localhost:8000")
-    CRON_SECRET: str = os.getenv("CRON_SECRET", "default-secret")
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "info")
+
+    # 固定用户 ID（个人使用，无需登录）
+    USER_ID: str = os.getenv("USER_ID", "default-user")
+
 
 settings = Settings()

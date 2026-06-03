@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
-import { fetchConversations, fetchConversation, deleteConversation as apiDeleteConversation } from '../lib/api';
-import type { Conversation } from '../types';
+import { fetchConversations, fetchConversation, deleteConversation } from '../lib/api';
+import type { Conversation, ConversationDetail } from '../types';
 
 export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -15,7 +15,7 @@ export function useConversations() {
     }
   }, []);
 
-  const selectConversation = useCallback(async (id: string) => {
+  const selectConversation = useCallback(async (id: string): Promise<ConversationDetail | null> => {
     try {
       const detail = await fetchConversation(id);
       setActiveConversationId(id);
@@ -28,19 +28,17 @@ export function useConversations() {
 
   const startNewConversation = useCallback(() => {
     setActiveConversationId(null);
-    return null;
   }, []);
 
-  const deleteConv = useCallback(async (id: string) => {
+  const removeConversation = useCallback(async (id: string) => {
     try {
-      await apiDeleteConversation(id);
+      await deleteConversation(id);
       setConversations((prev) => prev.filter((c) => c.id !== id));
     } catch (err) {
       console.error('Failed to delete conversation:', err);
     }
   }, []);
 
-  // 初始加载
   useEffect(() => {
     loadConversations();
   }, [loadConversations]);
@@ -51,6 +49,6 @@ export function useConversations() {
     loadConversations,
     selectConversation,
     startNewConversation,
-    deleteConversation: deleteConv,
+    deleteConversation: removeConversation,
   };
 }

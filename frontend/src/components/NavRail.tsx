@@ -2,9 +2,12 @@ import { useNavigate, useLocation } from 'react-router-dom';
 
 const NAV_ITEMS = [
   { path: '/', label: '对话', icon: '💬' },
+  { path: '/wiki', label: 'Wiki', icon: '📖' },
   { path: '/graph', label: '图谱', icon: '◈' },
-  { path: '/profile', label: '画像', icon: '◉' },
-  { path: '/import', label: '导入', icon: '⬆' },
+  { path: '/ingest', label: '摄入', icon: '📄' },
+  { path: '/reviews', label: '审阅', icon: '📋' },
+  { path: '/research', label: '研究', icon: '🔍' },
+  { path: '/settings', label: '设置', icon: '⚙' },
 ];
 
 export function NavRail() {
@@ -17,8 +20,8 @@ export function NavRail() {
       <div style={styles.items}>
         {NAV_ITEMS.map((item) => {
           const active = item.path === '/'
-            ? location.pathname === '/' || location.pathname === '/conv'
-            : location.pathname === item.path;
+            ? location.pathname === '/'
+            : location.pathname.startsWith(item.path);
           return (
             <button
               key={item.path}
@@ -90,12 +93,6 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#58524a',
     color: '#e8e0d8',
   },
-  icon: {
-    fontSize: 18,
-    lineHeight: 1,
-  },
-  label: {
-    fontSize: 10,
-    lineHeight: 1,
-  },
+  icon: { fontSize: 18, lineHeight: 1 },
+  label: { fontSize: 10, lineHeight: 1 },
 };

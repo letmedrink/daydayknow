@@ -1,7 +1,7 @@
 import type { Conversation } from '../types';
 
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
+function timeAgo(ts: number): string {
+  const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return '刚刚';
   if (mins < 60) return `${mins}分钟前`;
@@ -44,8 +44,7 @@ export function ConversationPanel({ conversations, activeId, onSelect, onNew, on
           >
             <div style={styles.itemTitle}>{conv.title || '新对话'}</div>
             <div style={styles.itemMeta}>
-              <span>{conv.message_count}条消息</span>
-              <span>{timeAgo(conv.updated_at)}</span>
+              <span>{timeAgo(conv.updatedAt)}</span>
               <button
                 style={styles.deleteBtn}
                 onClick={(e) => {

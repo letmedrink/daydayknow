@@ -1,0 +1,217 @@
+"""Deep Research — 联网搜索 → LLM 综合 → 保存 wiki 页面。"""
+
+import json
+import re
+from datetime import datetime
+from typing import Optional
+
+from ..config import settings
+from ..storage import FileStore, WikiStore
+from ..storage.wiki_store import slugify
+from ..ingest.pipeline import parse_file_blocks, parse_review_blocks, _call_llm
+from ..ingest.prompts import build_generation_prompt
+
+import logging
+log = logging.getLogger("research")
+
+
+async def run_deep_research(
+    topic: str,
+    file_store: FileStore,
+    wiki_store: WikiStore,
+    search_queries: Optional[list[str]] = None,
+    progress_callback=None,
+) -> dict:
+    """执行深度研究流程。
+
+    Args:
+        topic: 研究主题
+        file_store: 文件存储
+        wiki_store: wiki 存储
+        search_queries: 搜索关键词列表（可选，默认从主题生成）
+        progress_callback: 进度回调
+
+    Returns:
+        {files_written, reviews, search_results}
+    """
+    async def report(step, progress, message):
+        log.info(f"[{step}] {message}")
+        if progress_callback:
+            await progress_callback(step, progress, message)
+
+    # Step 1: 生成搜索关键词
+    if not search_queries:
+        await report("generate_queries", 0.05, "生成搜索关键词...")
+        search_queries = await _generate_search_queries(topic)
+
+    # Step 2: 联网搜索
+    await report("search", 0.1, f"搜索 {len(search_queries)} 个关键词...")
+    search_results = await _web_search(search_queries)
+    await report("search", 0.3, f"找到 {len(search_results)} 条结果")
+
+    # Step 3: 综合搜索结果
+    await report("synthesize", 0.4, "LLM 综合搜索结果...")
+    synthesis = await _synthesize_results(topic, search_results)
+
+    # Step 4: 生成 wiki 页面
+    await report("generate", 0.6, "生成 wiki 页面...")
+    pages = wiki_store.list_pages()
+    index = "\n".join(f"- [{p['title']}] {p['path']}" for p in pages) if pages else "(知识库为空)"
+
+    generation_prompt = build_generation_prompt(
+        index, f"research-{slugify(topic)}.md", synthesis,
+    )
+    generation = await _call_llm(
+        generation_prompt,
+        f"研究主题：{topic}\n\n综合分析：\n\n{synthesis}",
+    )
+
+    # Step 5: 写入文件
+    await report("write", 0.8, "写入 wiki 页面...")
+    file_blocks, warnings = parse_file_blocks(generation)
+
+    files_written = []
+    for block in file_blocks:
+        rel_path = block["path"]
+        if not rel_path.startswith("wiki/"):
+            rel_path = f"wiki/{rel_path}"
+
+        from ..storage.wiki_store import parse_frontmatter
+        result = parse_frontmatter(block["content"])
+        if result["frontmatter"]:
+            wiki_store.write_page(rel_path, result["frontmatter"], result["body"], merge=True)
+        else:
+            from pathlib import Path
+            full_path = Path(settings.DATA_DIR) / rel_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(block["content"], encoding="utf-8")
+        files_written.append(rel_path)
+
+    # Step 6: 解析 REVIEW 块
+    review_items = parse_review_blocks(generation, source_path=f"wiki/queries/research-{slugify(topic)}.md")
+    if review_items:
+        file_store.add_reviews(review_items)
+
+    await report("done", 1.0, f"研究完成: {len(files_written)} 个页面")
+
+    return {
+        "files_written": files_written,
+        "reviews": review_items,
+        "search_results": search_results,
+        "warnings": warnings,
+    }
+
+
+async def _generate_search_queries(topic: str) -> list[str]:
+    """用 LLM 从主题生成搜索关键词。"""
+    try:
+        response = await _call_llm(
+            "你是搜索关键词生成专家。根据给定主题，生成 3-5 个适合搜索引擎的关键词。每行一个关键词，不要编号或其他内容。",
+            f"主题：{topic}",
+        )
+        queries = [q.strip() for q in response.strip().split("\n") if q.strip()]
+        return queries[:5] if queries else [topic]
+    except Exception:
+        return [topic]
+
+
+async def _web_search(queries: list[str]) -> list[dict]:
+    """调用搜索 API 获取网络结果。"""
+    provider = settings.SEARCH_API_PROVIDER
+    api_key = settings.SEARCH_API_KEY
+
+    if not provider or not api_key:
+        log.warning("搜索 API 未配置，返回空结果")
+        return []
+
+    results = []
+
+    if provider == "tavily":
+        results = await _search_tavily(queries, api_key)
+    elif provider == "serpapi":
+        results = await _search_serpapi(queries, api_key)
+    else:
+        log.warning(f"不支持的搜索提供商: {provider}")
+
+    return results[:20]  # 最多 20 条结果
+
+
+async def _search_tavily(queries: list[str], api_key: str) -> list[dict]:
+    """Tavily 搜索 API。"""
+    import httpx
+
+    results = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for query in queries:
+            try:
+                resp = await client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": api_key,
+                        "query": query,
+                        "max_results": 5,
+                        "include_answer": True,
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for item in data.get("results", []):
+                        results.append({
+                            "title": item.get("title", ""),
+                            "url": item.get("url", ""),
+                            "snippet": item.get("content", ""),
+                            "source": "tavily",
+                        })
+                    if data.get("answer"):
+                        results.append({
+                            "title": f"Tavily 综合回答: {query}",
+                            "url": "",
+                            "snippet": data["answer"],
+                            "source": "tavily_answer",
+                        })
+            except Exception as e:
+                log.error(f"Tavily 搜索失败 ({query}): {e}")
+
+    return results
+
+
+async def _search_serpapi(queries: list[str], api_key: str) -> list[dict]:
+    """SerpApi 搜索。"""
+    import httpx
+
+    results = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for query in queries:
+            try:
+                resp = await client.get(
+                    "https://serpapi.com/search",
+                    params={"q": query, "api_key": api_key, "num": 5},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for item in data.get("organic_results", []):
+                        results.append({
+                            "title": item.get("title", ""),
+                            "url": item.get("link", ""),
+                            "snippet": item.get("snippet", ""),
+                            "source": "serpapi",
+                        })
+            except Exception as e:
+                log.error(f"SerpApi 搜索失败 ({query}): {e}")
+
+    return results
+
+
+async def _synthesize_results(topic: str, search_results: list[dict]) -> str:
+    """LLM 综合搜索结果。"""
+    results_text = "\n\n".join(
+        f"### {r['title']}\n来源: {r['url']}\n{r['snippet']}"
+        for r in search_results
+    )
+
+    response = await _call_llm(
+        "你是知识综合专家。将搜索结果整合为结构化的研究摘要。用中文输出。",
+        f"研究主题：{topic}\n\n搜索结果：\n\n{results_text}\n\n请综合以上结果，输出一份全面、结构化的研究摘要。包含关键发现、数据点、不同观点和结论。",
+    )
+
+    return response

@@ -1,16 +1,15 @@
 import { useState, useCallback, useRef } from 'react';
-import { sendChatMessage, pollTaskResult } from '../lib/api';
-import type { Message, KgNode, KgEdge } from '../types';
+import { sendChatMessage } from '../lib/api';
+import type { Message, GuidedOption, WikiReference } from '../types';
 
-export function useChat(onProfileUpdate?: () => void) {
+export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [extractionNodes, setExtractionNodes] = useState<KgNode[]>([]);
-  const [extractionEdges, setExtractionEdges] = useState<KgEdge[]>([]);
+  const [currentOptions, setCurrentOptions] = useState<GuidedOption[]>([]);
+  const [currentReferences, setCurrentReferences] = useState<WikiReference[]>([]);
 
-  // 跟踪当前对话 ID，防止异步回调污染其他对话
   const activeConvRef = useRef<string | null>(null);
 
   const loadMessages = useCallback((msgs: Message[], convId: string) => {
@@ -18,8 +17,8 @@ export function useChat(onProfileUpdate?: () => void) {
     setConversationId(convId);
     activeConvRef.current = convId;
     setStreamingContent('');
-    setExtractionNodes([]);
-    setExtractionEdges([]);
+    setCurrentOptions([]);
+    setCurrentReferences([]);
   }, []);
 
   const reset = useCallback(() => {
@@ -27,8 +26,8 @@ export function useChat(onProfileUpdate?: () => void) {
     setConversationId(null);
     activeConvRef.current = null;
     setStreamingContent('');
-    setExtractionNodes([]);
-    setExtractionEdges([]);
+    setCurrentOptions([]);
+    setCurrentReferences([]);
     setIsLoading(false);
   }, []);
 
@@ -38,8 +37,8 @@ export function useChat(onProfileUpdate?: () => void) {
 
       setIsLoading(true);
       setStreamingContent('');
-      setExtractionNodes([]);
-      setExtractionEdges([]);
+      setCurrentOptions([]);
+      setCurrentReferences([]);
 
       const userMsg: Message = { role: 'user', content };
       setMessages((prev) => [...prev, userMsg]);
@@ -66,27 +65,17 @@ export function useChat(onProfileUpdate?: () => void) {
             setStreamingContent('');
             setIsLoading(false);
           },
-          onExtraction: (nodes, edges) => {
-            // 仅在当前对话未变化时更新
+          onOptions: (options) => {
             if (activeConvRef.current === (sendConvId || activeConvRef.current)) {
-              setExtractionNodes(nodes);
-              setExtractionEdges(edges);
+              setCurrentOptions(options);
             }
           },
-          onProfile: () => {
-            onProfileUpdate?.();
-          },
-          onTaskEnqueued: (taskId) => {
-            pollTaskResult(taskId, (result) => {
-              // 仅在当前对话未变化时更新
-              if (activeConvRef.current === (sendConvId || activeConvRef.current)) {
-                setExtractionNodes(result.nodes);
-                setExtractionEdges(result.edges);
-              }
-            });
+          onReferences: (refs) => {
+            if (activeConvRef.current === (sendConvId || activeConvRef.current)) {
+              setCurrentReferences(refs);
+            }
           },
           onError: (err) => {
-            console.error(err);
             setMessages((prev) => [
               ...prev,
               { role: 'assistant', content: `[错误] ${err.message}` },
@@ -96,7 +85,7 @@ export function useChat(onProfileUpdate?: () => void) {
         },
       );
     },
-    [messages, conversationId, isLoading, onProfileUpdate],
+    [messages, conversationId, isLoading],
   );
 
   return {
@@ -104,10 +93,10 @@ export function useChat(onProfileUpdate?: () => void) {
     streamingContent,
     isLoading,
     sendMessage,
-    extractionNodes,
-    extractionEdges,
     conversationId,
     loadMessages,
     reset,
+    currentOptions,
+    currentReferences,
   };
 }
