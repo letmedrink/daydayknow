@@ -1,34 +1,30 @@
-from fastapi import Header, Query, Depends
-from typing import Optional
-from .services.supabase_client import generate_user_id, is_mock_mode, get_db
-from .config import settings
+"""FastAPI dependency providers for global and project-scoped stores."""
 
-async def get_user_id(
-    x_user_id: Optional[str] = Header(None, alias="x-user-id"),
-    user_id: Optional[str] = Query(None, alias="userId")
-) -> str:
-    """获取用户ID（匿名用户）"""
-    if x_user_id:
-        return x_user_id
-    if user_id:
-        return user_id
-    return generate_user_id()
+from fastapi import Depends, HTTPException, Path, Request
 
-async def get_current_user(
-    user_id: str = Depends(get_user_id)
-) -> str:
-    """获取当前用户（依赖注入）"""
-    return user_id
+from .storage.file_store import FileStore
+from .storage.wiki_store import WikiStore
 
-async def verify_cron_secret(
-    authorization: Optional[str] = Header(None)
-) -> bool:
-    """验证批处理密钥"""
-    if not authorization:
-        return False
-    
-    if not authorization.startswith("Bearer "):
-        return False
-    
-    token = authorization[7:]  # 移除 "Bearer " 前缀
-    return token == settings.CRON_SECRET
+
+def get_global_store(request: Request) -> FileStore:
+    """Return the global store used by settings and the user profile."""
+    return request.app.state.global_store
+
+
+def get_project_store(request: Request):
+    return request.app.state.project_store
+
+
+def get_project_dir(request: Request, project_id: str = Path(...)):
+    project_dir = request.app.state.project_store.get_project_dir(project_id)
+    if not project_dir:
+        raise HTTPException(status_code=404, detail=f"项目 {project_id} 不存在")
+    return project_dir
+
+
+def get_project_file_store(project_dir=Depends(get_project_dir)) -> FileStore:
+    return FileStore(project_dir)
+
+
+def get_project_wiki_store(project_dir=Depends(get_project_dir)) -> WikiStore:
+    return WikiStore(project_dir)

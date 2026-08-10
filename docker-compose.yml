@@ -1,84 +1,30 @@
-# Docker Compose 配置
-# 包含开发和生产两种环境配置
-
 services:
-  # 开发环境
-  app-dev:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3000:3000"
-    volumes:
-      - .:/app
-      - /app/node_modules
-      - /app/.next
-    environment:
-      - MOCK_MODE=true
-      - NODE_ENV=development
-    env_file:
-      - .env.docker
-    profiles:
-      - dev
-
-  # 生产环境
-  app-prod:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    environment:
-      - MOCK_MODE=false
-      - NODE_ENV=production
-    env_file:
-      - .env.docker
-    restart: unless-stopped
-    profiles:
-      - prod
-
-  # FastAPI 后端开发环境
-  backend-dev:
+  backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
+    env_file:
+      - path: ./backend/.env
+        required: false
     volumes:
-      - ./backend:/app
-    environment:
-      - MOCK_MODE=true
-    env_file:
-      - ./backend/.env.docker
-    profiles:
-      - dev
-
-  # FastAPI 后端生产环境
-  backend-prod:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      - MOCK_MODE=false
-    env_file:
-      - ./backend/.env.docker
+      - llmwiki-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
-    profiles:
-      - prod
 
-  # Nginx反向代理（生产环境可选）
-  nginx:
-    image: nginx:alpine
+  frontend:
+    build:
+      context: ./frontend
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deploy/nginx/ssl:/etc/nginx/ssl:ro
+      - "3000:80"
     depends_on:
-      - app-prod
-      - backend-prod
-    profiles:
-      - prod-nginx
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  llmwiki-data:

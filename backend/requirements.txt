@@ -1,9 +1,25 @@
+# llmwiki 后端依赖
+
+# Web 框架
 fastapi>=0.100.0
 uvicorn>=0.23.0
+python-multipart>=0.0.6
 pydantic>=2.0.0
+
+# 配置
 python-dotenv>=1.0.0
-openai>=1.0.0
-httpx>=0.24.0
-supabase>=2.0.0
+
+# HTTP 客户端（LLM API 调用）
+httpx[socks]>=0.24.0
+
+# YAML 解析（frontmatter）
+pyyaml>=6.0
+
+# 文档解析
+pymupdf>=1.23.0       # PDF 解析
+python-pptx>=0.6.21   # PowerPoint 解析
+python-docx>=1.1.0    # Word 解析
+
+# 测试
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
