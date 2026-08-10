@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { fetchWikiGraph, searchGraph, deepResearch } from '../lib/api';
+import { useProject } from '../contexts/ProjectContext';
 import { KnowledgeGraph } from './KnowledgeGraph';
 import { GraphInsights } from './GraphInsights';
 import type { WikiGraphNode, WikiGraphEdge, WikiGraphCommunity } from '../types';
 
 export function GraphPage() {
+  const { activeProjectId } = useProject();
   const [allNodes, setAllNodes] = useState<WikiGraphNode[]>([]);
   const [allEdges, setAllEdges] = useState<WikiGraphEdge[]>([]);
   const [communities, setCommunities] = useState<WikiGraphCommunity[]>([]);
@@ -21,7 +23,7 @@ export function GraphPage() {
   const [showInsights, setShowInsights] = useState(false);
 
   useEffect(() => {
-    fetchWikiGraph()
+    fetchWikiGraph(activeProjectId)
       .then((data) => {
         setAllNodes(data.nodes);
         setAllEdges(data.edges);
@@ -49,7 +51,7 @@ export function GraphPage() {
       return;
     }
     try {
-      const result = await searchGraph(q);
+      const result = await searchGraph(q, activeProjectId);
       setSearchResults(new Set(result.nodes.map((n: any) => n.id)));
     } catch {
       setSearchResults(new Set());
@@ -116,7 +118,7 @@ export function GraphPage() {
   };
 
   const handleResearchFromInsights = (query: string) => {
-    deepResearch(query).catch(console.error);
+    deepResearch(query, undefined, undefined, activeProjectId).catch(console.error);
   };
 
   const handleHighlightFromInsights = (nodeId: string) => {

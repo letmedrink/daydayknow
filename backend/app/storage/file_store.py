@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 import time
 import uuid
 from pathlib import Path
@@ -17,21 +16,10 @@ class FileStore:
         self._ensure_dirs()
 
     def _ensure_dirs(self):
+        # FileStore 只管理自己的 JSON 文件，wiki 的 .md 目录由 WikiStore 按需创建
         for sub in [
-            "conversations",
-            "profile",
-            "wiki/entities",
-            "wiki/concepts",
-            "wiki/sources",
-            "wiki/queries",
-            "wiki/comparisons",
-            "wiki/synthesis",
-            "wiki/findings",
-            "wiki/thesis",
-            "wiki/methodology",
-            "wiki/media",
-            "raw/sources",
-            "page-history",
+            "conversations",    # 对话索引 + 消息 (conversations/index.json, conversations/{id}/messages.json)
+            "profile",          # 用户画像 (profile/profile.json)
         ]:
             (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
 
@@ -153,6 +141,7 @@ class FileStore:
             "activeProviderId": "",
             "searchApiConfig": {},
             "outputLanguage": "zh-CN",
+            "multimodalModel": "",
         })
 
     def update_settings(self, **fields) -> dict:

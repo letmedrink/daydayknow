@@ -4,7 +4,7 @@ import json
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ..dependencies import get_file_store, get_wiki_store
+from ..dependencies import get_active_file_store, get_active_wiki_store
 from ..storage import FileStore, WikiStore
 
 router = APIRouter(prefix="/api/ingest")
@@ -13,8 +13,8 @@ router = APIRouter(prefix="/api/ingest")
 @router.post("")
 async def ingest_file(
     file: UploadFile = File(...),
-    file_store: FileStore = Depends(get_file_store),
-    wiki_store: WikiStore = Depends(get_wiki_store),
+    file_store: FileStore = Depends(get_active_file_store),
+    wiki_store: WikiStore = Depends(get_active_wiki_store),
 ):
     """上传文件，触发摄入流程（SSE 实时返回进度）。"""
     if not file.filename:
@@ -57,8 +57,8 @@ async def ingest_file(
 @router.post("/batch")
 async def ingest_batch(
     files: list[UploadFile] = File(...),
-    file_store: FileStore = Depends(get_file_store),
-    wiki_store: WikiStore = Depends(get_wiki_store),
+    file_store: FileStore = Depends(get_active_file_store),
+    wiki_store: WikiStore = Depends(get_active_wiki_store),
 ):
     """批量文件摄入。"""
     from ..ingest.pipeline import run_ingest_pipeline

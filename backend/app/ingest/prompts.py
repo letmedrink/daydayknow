@@ -1,4 +1,19 @@
-"""摄入 Prompt 构建 — 分析 + 生成 prompt（中文版）。"""
+"""摄入 Prompt 构建 — 两阶段 LLM 调用 prompt 模板。
+
+两阶段设计（从 llm_wiki 项目借鉴的 chain-of-thought 模式）：
+Step 1 - 分析：LLM 阅读源文档，产出结构化分析（实体/概念/论点/矛盾/建议）
+Step 2 - 生成：基于分析结果，输出 FILE 块和可选的 REVIEW 块
+
+为什么分两步而不是一步？
+- 一步生成容易遗漏关键信息，分析步骤强制 LLM 先理解再输出
+- 分析结果只作中间推理，最终只解析 FILE/REVIEW 块，不依赖分析文本的结构化
+
+Prompt 设计要点：
+- 语言统一为中文（确保知识库一致性）
+- 输出格式要求在 prompt 末尾（最近指令权重最高）
+- 严格的 frontmatter 规则说明（防止 YAML 解析失败）
+- FILE 块模板和 REVIEW 块模板分别给出完整示例
+"""
 
 from datetime import datetime
 
@@ -75,9 +90,14 @@ def build_generation_prompt(
 
     parts = [
         "你是一位知识库维护者。根据分析结果生成 wiki 文件。",
+        "",
+        "【核心规则 — 违反将导致任务失败】所有 FILE 块的页面路径必须使用中文文件名！",
+        "例如：---FILE: wiki/entities/韩立.md--- 是正确做法，---FILE: wiki/entities/han-li.md--- 是错误的。",
+        "拼音和英文翻译都会导致页面无法被正确检索，绝对禁止。",
+        "",
         "不要输出思维链、隐藏推理或解释性前言。内部推理后只输出要求的 FILE/REVIEW 块。",
         "",
-        "生成语言：全部使用中文，包括页面标题、内容、描述。页面路径使用英文 slug。",
+        "生成语言：全部使用中文，包括页面标题、内容、描述。页面路径直接使用中文文件名（不要用拼音！），例如：wiki/entities/韩立.md 而非 wiki/entities/han-li.md。中文文件名可以正常工作。",
         "",
         f"## 重要：源文件",
         f"原始源文件是：**{source_filename}**",
@@ -103,7 +123,7 @@ def build_generation_prompt(
         "4. 关闭 `---` 之后的下一行是页面正文的开始。",
         "5. 数组使用标准 YAML 内联形式 `[a, b, c]`。",
         "   wikilink 只在正文中使用 — 不要写 `related: [[a]], [[b]]`（无效 YAML）；",
-        "   写 `related: [a, b]`，只用 slug。",
+        "   写 `related: [韩立, 掌天瓶]`，用页面标题（中文即可）。",
         "",
         "必填字段和类型：",
         f"  - type     — {' / '.join(WIKI_PAGE_TYPES)}",
@@ -111,7 +131,7 @@ def build_generation_prompt(
         f"  - created  — 日期 YYYY-MM-DD（不加引号），今天是 {today}",
         f"  - updated  — 同 created",
         "  - tags     — 字符串数组：`tags: [微生物, ai]`",
-        "  - related  — wiki 页面 slug 数组：`related: [foo, bar-baz]`",
+        "  - related  — wiki 页面标题数组（中文）：`related: [韩立, 修仙境界]`",
         f"  - sources  — 源文件名数组；必须包含 \"{source_filename}\"",
         "",
         "完整可解析页面示例：",
@@ -122,7 +142,7 @@ def build_generation_prompt(
         f"    created: {today}",
         f"    updated: {today}",
         "    tags: [示例, 演示]",
-        "    related: [related-slug-1, related-slug-2]",
+        "    related: [示例概念一, 示例概念二]",
         f'    sources: ["{source_filename}"]',
         "    ---",
         "",
@@ -132,7 +152,7 @@ def build_generation_prompt(
         "",
         "其他规则：",
         "- 正文中使用 [[wikilink]] 语法进行交叉引用",
-        "- 使用 kebab-case 文件名",
+        "- 文件名直接使用中文（如 韩立.md、修仙境界.md），不要用拼音！不要用英文！中文文件名完全支持。",
         "- 遵循分析中的建议来决定强调什么",
         "",
         "## Review 块类型",
@@ -180,10 +200,13 @@ def build_generation_prompt(
         "",
         "FILE 块模板：",
         "```",
-        "---FILE: wiki/path/to/page.md---",
+        "---FILE: wiki/entities/韩立.md---",
         "（完整文件内容，含 YAML frontmatter）",
         "---END FILE---",
         "```",
+        "",
+        "注意：FILE 路径中的文件名必须使用中文（如 韩立.md, 修仙境界.md, 掌天瓶.md），",
+        "严禁使用拼音（han-li.md）或英文翻译（han-li.md）作为文件名！",
         "",
         "REVIEW 块模板（可选，在所有 FILE 块之后）：",
         "```",
@@ -197,6 +220,7 @@ def build_generation_prompt(
         "",
         "## 输出要求（严格 — 偏离将导致解析失败）",
         "",
+        '0. 【最重要】FILE 块的文件路径必须使用中文文件名！例如 wiki/entities/韩立.md，严禁写成 wiki/entities/han-li.md！拼音文件名会导致整个系统无法正确检索，这是绝对禁止的。',
         '1. 你响应的第一个字符必须是 `-`（`---FILE:` 的开头）。',
         '2. 不要输出任何前言，如"以下是文件："、"根据分析..."等。',
         "3. 不要重复分析内容 — 那是第一步的工作。你的工作是输出 FILE 块。",

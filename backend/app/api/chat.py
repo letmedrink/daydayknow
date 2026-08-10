@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 
-from ..dependencies import get_file_store, get_wiki_store, get_current_user
+from ..dependencies import get_active_file_store, get_active_wiki_store, get_current_user
 from ..storage import FileStore, WikiStore
 from ..agents.chat_agent import ChatAgent
 
@@ -22,8 +22,8 @@ class ChatRequest(BaseModel):
 async def chat_endpoint(
     req: ChatRequest,
     user_id: str = Depends(get_current_user),
-    file_store: FileStore = Depends(get_file_store),
-    wiki_store: WikiStore = Depends(get_wiki_store),
+    file_store: FileStore = Depends(get_active_file_store),
+    wiki_store: WikiStore = Depends(get_active_wiki_store),
 ):
     """SSE 流式对话端点。"""
     # 创建或获取对话
@@ -50,14 +50,14 @@ async def chat_endpoint(
 
 
 @router.get("/api/conversations")
-async def list_conversations(file_store: FileStore = Depends(get_file_store)):
+async def list_conversations(file_store: FileStore = Depends(get_active_file_store)):
     """对话列表。"""
     conversations = file_store.list_conversations()
     return {"success": True, "data": conversations}
 
 
 @router.get("/api/conversations/{conv_id}")
-async def get_conversation(conv_id: str, file_store: FileStore = Depends(get_file_store)):
+async def get_conversation(conv_id: str, file_store: FileStore = Depends(get_active_file_store)):
     """对话详情 + 消息。"""
     conv = file_store.get_conversation(conv_id)
     if not conv:
@@ -67,7 +67,7 @@ async def get_conversation(conv_id: str, file_store: FileStore = Depends(get_fil
 
 
 @router.patch("/api/conversations/{conv_id}")
-async def update_conversation(conv_id: str, title: str, file_store: FileStore = Depends(get_file_store)):
+async def update_conversation(conv_id: str, title: str, file_store: FileStore = Depends(get_active_file_store)):
     """重命名对话。"""
     conv = file_store.update_conversation(conv_id, title=title)
     if not conv:
@@ -76,7 +76,7 @@ async def update_conversation(conv_id: str, title: str, file_store: FileStore = 
 
 
 @router.delete("/api/conversations/{conv_id}")
-async def delete_conversation(conv_id: str, file_store: FileStore = Depends(get_file_store)):
+async def delete_conversation(conv_id: str, file_store: FileStore = Depends(get_active_file_store)):
     """删除对话。"""
     if not file_store.delete_conversation(conv_id):
         raise HTTPException(status_code=404, detail="对话不存在")

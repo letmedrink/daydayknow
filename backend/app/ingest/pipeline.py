@@ -1,4 +1,31 @@
-"""摄入 Pipeline — 主流程编排 + FILE/REVIEW 块解析。"""
+"""摄入 Pipeline — 主流程编排 + FILE/REVIEW 块解析。
+
+摄入流程（10 步）：
+0. 解析文件 → 纯文本
+1. SHA-256 缓存检查（幂等，相同文件不重复处理）
+2. 图片提取（PDF/PPTX/DOCX 中的嵌入图片）
+3. 图片描述（多模态 LLM 生成 alt text）
+4. 构建 wiki 索引（用于 LLM 判断已有内容）
+5. LLM 分析文档（Step 1: 分析实体/概念/论点/矛盾）
+6. LLM 生成 wiki 页面（Step 2: 输出 FILE/REVIEW 块）
+7. 解析 FILE 块 → 写入 .md 文件
+8. Safety-net 图片注入（确保图片不丢失）
+9. 解析 REVIEW 块 → 生成审阅项
+10. 保存缓存
+
+核心协议：FILE 块格式
+  ---FILE: wiki/path/to/page.md---
+  (完整 Markdown 内容，含 YAML frontmatter)
+  ---END FILE---
+
+REVIEW 块格式：
+  ---REVIEW: type | 标题---
+  描述内容
+  OPTIONS: 选项1 | 选项2
+  PAGES: wiki/page1.md, wiki/page2.md
+  SEARCH: 关键词1 | 关键词2
+  ---END REVIEW---
+"""
 
 import re
 from datetime import datetime
@@ -30,9 +57,14 @@ REVIEW_RE = re.compile(
 
 
 def parse_file_blocks(text: str) -> tuple[list[dict], list[str]]:
-    """解析 FILE 块。返回 (blocks, warnings)。
+    """解析 LLM 输出中的 FILE 块。返回 (blocks, warnings)。
 
     每个 block: {path: str, content: str}
+
+    关键设计：围栏感知（fence-aware）
+    - FILE 块内可能包含 Markdown 代码围栏（```），其中可能有 ---FILE: 字样
+    - 解析器追踪围栏状态，只在围栏外识别 ---END FILE--- 关闭标记
+    - 这样可以防止代码块内的 ---FILE: 被误解析
     """
     text = text.replace("\r\n", "\n")
     lines = text.split("\n")
@@ -51,30 +83,32 @@ def parse_file_blocks(text: str) -> tuple[list[dict], list[str]]:
         i += 1
 
         content_lines = []
-        fence_marker = None
-        fence_len = 0
+        fence_marker = None  # 当前代码围栏的标记字符（` 或 ~）
+        fence_len = 0        # 当前代码围栏的长度
         closed = False
 
         while i < len(lines):
             line = lines[i]
 
-            # 更新围栏状态
+            # 追踪 Markdown 代码围栏状态（防止围栏内的 ---END FILE--- 被误识别）
             fm = FENCE_RE.match(line)
             if fm:
                 run = fm.group(1)
                 char = run[0]
                 length = len(run)
                 if fence_marker is None:
+                    # 进入围栏
                     fence_marker = char
                     fence_len = length
                 elif char == fence_marker and length >= fence_len:
+                    # 退出围栏
                     fence_marker = None
                     fence_len = 0
                 content_lines.append(line)
                 i += 1
                 continue
 
-            # 在围栏外遇到 END FILE 才算关闭
+            # 只在围栏外才识别 END FILE 关闭标记
             if fence_marker is None and CLOSER_RE.match(line):
                 closed = True
                 i += 1
@@ -96,6 +130,7 @@ def parse_file_blocks(text: str) -> tuple[list[dict], list[str]]:
             warnings.append(msg)
             continue
 
+        # 安全检查：路径必须在 wiki/ 下，不允许 .. 穿越和绝对路径
         if not _is_safe_path(path):
             msg = f'FILE 块路径 "{path}" 不安全，已拒绝。'
             log.warning(msg)
@@ -280,10 +315,14 @@ async def run_ingest_pipeline(
                 merge=True,
             )
         else:
-            # 没有 frontmatter，直接写入
+            # 没有 frontmatter：若文件已存在则追加，否则新建
             full_path = Path(settings.DATA_DIR) / "wiki" / wiki_rel
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content_text, encoding="utf-8")
+            if full_path.exists():
+                existing = full_path.read_text(encoding="utf-8")
+                full_path.write_text(existing.rstrip() + "\n\n" + content_text.strip() + "\n", encoding="utf-8")
+            else:
+                full_path.write_text(content_text, encoding="utf-8")
 
         files_written.append(f"wiki/{wiki_rel}")
 
@@ -330,8 +369,8 @@ def _inject_image_descriptions(source_content: str, images: list[dict]) -> str:
     return source_content
 
 
-MARKER_START = "<!-- daydayknow:embedded-images -->"
-MARKER_END = "<!-- /daydayknow:embedded-images -->"
+MARKER_START = "<!-- llmwiki:embedded-images -->"
+MARKER_END = "<!-- /llmwiki:embedded-images -->"
 
 
 def _inject_images_into_source_summary(

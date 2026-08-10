@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { sendChatMessage } from '../lib/api';
 import type { Message, GuidedOption, WikiReference } from '../types';
 
-export function useChat() {
+export function useChat(projectId?: string) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -11,6 +11,7 @@ export function useChat() {
   const [currentReferences, setCurrentReferences] = useState<WikiReference[]>([]);
 
   const activeConvRef = useRef<string | null>(null);
+  const currentRefsRef = useRef<WikiReference[]>([]);
 
   const loadMessages = useCallback((msgs: Message[], convId: string) => {
     setMessages(msgs);
@@ -33,34 +34,56 @@ export function useChat() {
 
   const sendMessage = useCallback(
     async (content: string) => {
-      if (!content.trim() || isLoading) return;
+      if (!content.trim() || isLoading || !projectId) return;
 
       setIsLoading(true);
       setStreamingContent('');
       setCurrentOptions([]);
       setCurrentReferences([]);
+      currentRefsRef.current = [];
 
       const userMsg: Message = { role: 'user', content };
       setMessages((prev) => [...prev, userMsg]);
 
       let assistantContent = '';
+      let thinkingOpen = false;
       const sendConvId = conversationId;
+
+      const closeThinking = () => {
+        if (thinkingOpen) {
+          thinkingOpen = false;
+          assistantContent += '</think>';
+        }
+      };
 
       await sendChatMessage(
         content,
         [...messages, userMsg].map((m) => ({ role: m.role, content: m.content })),
         conversationId,
         {
+          onReasoning: (token) => {
+            if (!thinkingOpen) {
+              thinkingOpen = true;
+              assistantContent += '<think>';
+            }
+            assistantContent += token;
+            setStreamingContent(assistantContent);
+          },
           onChunk: (chunk) => {
+            closeThinking();
             assistantContent += chunk;
             setStreamingContent(assistantContent);
           },
           onDone: (cid) => {
+            closeThinking();
+            // 剥离 OPTIONS 行（后端也会剥离，但流式内容已包含）
+            const cleanContent = assistantContent.replace(/\n?OPTIONS:\s*.+$/m, '').trim();
             setConversationId(cid);
             activeConvRef.current = cid;
+            const refs = currentRefsRef.current;
             setMessages((prev) => [
               ...prev,
-              { role: 'assistant', content: assistantContent },
+              { role: 'assistant', content: cleanContent, references: refs.length > 0 ? refs : undefined },
             ]);
             setStreamingContent('');
             setIsLoading(false);
@@ -73,6 +96,7 @@ export function useChat() {
           onReferences: (refs) => {
             if (activeConvRef.current === (sendConvId || activeConvRef.current)) {
               setCurrentReferences(refs);
+              currentRefsRef.current = refs;
             }
           },
           onError: (err) => {
@@ -83,9 +107,10 @@ export function useChat() {
             setIsLoading(false);
           },
         },
+        projectId,
       );
     },
-    [messages, conversationId, isLoading],
+    [messages, conversationId, isLoading, projectId],
   );
 
   return {

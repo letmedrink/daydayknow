@@ -1,3 +1,12 @@
+"""llmwiki API v3.0 — FastAPI 应用入口。
+
+架构：
+- 存储层：FileStore（JSON）+ WikiStore（Markdown）+ ProjectStore（项目索引）
+- 中间件：CORS + RequestID + 异常处理
+- 路由分组：chat / wiki / ingest / reviews / research / projects / settings
+- 多项目隔离：通过 project_id query param 路由到不同数据目录
+- 无数据库：所有数据存为 JSON + Markdown 文件，零依赖部署
+"""
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -5,12 +14,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .api import chat, wiki, ingest, reviews, research
+from .api import chat, wiki, ingest, reviews, research, projects
 from .api import settings as settings_api
 from .config import settings
 from .errors import AppError, app_error_handler
 from .models.responses import HealthResponse
 from .storage import FileStore, WikiStore
+from .storage.project_store import ProjectStore
 from .utils.logger import create_module_logger
 
 log = create_module_logger("api")
@@ -21,6 +31,7 @@ async def lifespan(app: FastAPI):
     # 初始化存储
     app.state.file_store = FileStore(settings.DATA_DIR)
     app.state.wiki_store = WikiStore(settings.DATA_DIR)
+    app.state.project_store = ProjectStore(settings.DATA_DIR)
     log.logger.info(f"数据目录: {settings.DATA_DIR}")
     yield
 
@@ -58,8 +69,8 @@ class RequestIDMiddleware:
 
 
 app = FastAPI(
-    title="知微 API",
-    description="格物致知，见微知著 — AI 知识学习平台",
+    title="llmwiki API",
+    description="AI-powered knowledge wiki platform with multi-agent architecture",
     version="3.0.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -105,6 +116,7 @@ def get_wiki_store(request: Request) -> WikiStore:
 
 
 # 路由分组
+app.include_router(projects.router, tags=["项目"])
 app.include_router(chat.router, tags=["对话"])
 app.include_router(wiki.router, tags=["Wiki"])
 app.include_router(ingest.router, tags=["文档摄入"])
@@ -115,7 +127,7 @@ app.include_router(settings_api.router, tags=["设置"])
 
 @app.get("/", tags=["系统"])
 async def root():
-    return {"message": "知微 API", "version": "3.0.0", "docs": "/docs"}
+    return {"message": "llmwiki API", "version": "3.0.0", "docs": "/docs"}
 
 
 @app.get("/health", tags=["系统"], response_model=HealthResponse)

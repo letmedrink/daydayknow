@@ -6,6 +6,38 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
+/** 附加 project_id 查询参数 */
+function withProject(url: string, projectId?: string): string {
+  if (!projectId) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}project_id=${encodeURIComponent(projectId)}`;
+}
+
+// ─── 项目 ──────────────────────────────────────────────────
+
+export async function fetchProjects(): Promise<any[]> {
+  const resp = await fetch(`${API_BASE}/api/projects`);
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function createProject(name: string, path?: string): Promise<any> {
+  const resp = await fetch(`${API_BASE}/api/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, path: path || undefined }),
+  });
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  const resp = await fetch(`${API_BASE}/api/projects/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+}
+
 // ─── 对话 ──────────────────────────────────────────────────
 
 export async function sendChatMessage(
@@ -13,8 +45,10 @@ export async function sendChatMessage(
   history: Array<{ role: string; content: string }>,
   conversationId: string | null,
   callbacks: SSECallbacks,
+  projectId?: string,
 ) {
-  const response = await fetch(`${API_BASE}/api/chat`, {
+  const url = withProject(`${API_BASE}/api/chat`, projectId);
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, history, conversation_id: conversationId }),
@@ -42,6 +76,7 @@ export async function sendChatMessage(
       try {
         const event = JSON.parse(line.slice(6));
         if (event.type === 'chunk') callbacks.onChunk(event.content);
+        else if (event.type === 'reasoning') callbacks.onReasoning?.(event.content);
         else if (event.type === 'done') callbacks.onDone(event.conversation_id);
         else if (event.type === 'options') callbacks.onOptions(event.options);
         else if (event.type === 'references') callbacks.onReferences(event.references);
@@ -52,69 +87,69 @@ export async function sendChatMessage(
   }
 }
 
-export async function fetchConversations(): Promise<Conversation[]> {
-  const resp = await fetch(`${API_BASE}/api/conversations`);
+export async function fetchConversations(projectId?: string): Promise<Conversation[]> {
+  const resp = await fetch(withProject(`${API_BASE}/api/conversations`, projectId));
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
   const data = await resp.json();
   return data.data || data;
 }
 
-export async function fetchConversation(id: string): Promise<ConversationDetail> {
-  const resp = await fetch(`${API_BASE}/api/conversations/${id}`);
+export async function fetchConversation(id: string, projectId?: string): Promise<ConversationDetail> {
+  const resp = await fetch(withProject(`${API_BASE}/api/conversations/${id}`, projectId));
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
   const data = await resp.json();
   return data.data || data;
 }
 
-export async function deleteConversation(id: string): Promise<void> {
-  const resp = await fetch(`${API_BASE}/api/conversations/${id}`, { method: 'DELETE' });
+export async function deleteConversation(id: string, projectId?: string): Promise<void> {
+  const resp = await fetch(withProject(`${API_BASE}/api/conversations/${id}`, projectId), { method: 'DELETE' });
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
 }
 
 // ─── Wiki ──────────────────────────────────────────────────
 
-export async function fetchWikiPages(): Promise<{ tree: WikiPage[]; pages: WikiPage[] }> {
-  const resp = await fetch(`${API_BASE}/api/wiki/pages`);
+export async function fetchWikiPages(projectId?: string): Promise<{ tree: WikiPage[]; pages: WikiPage[] }> {
+  const resp = await fetch(withProject(`${API_BASE}/api/wiki/pages`, projectId));
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
   const data = await resp.json();
   return data.data;
 }
 
-export async function fetchWikiPage(path: string): Promise<any> {
-  const resp = await fetch(`${API_BASE}/api/wiki/page?path=${encodeURIComponent(path)}`);
+export async function fetchWikiPage(path: string, projectId?: string): Promise<any> {
+  const resp = await fetch(withProject(`${API_BASE}/api/wiki/page?path=${encodeURIComponent(path)}`, projectId));
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
   const data = await resp.json();
   return data.data;
 }
 
-export async function deleteWikiPage(path: string): Promise<void> {
-  const resp = await fetch(`${API_BASE}/api/wiki/page?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+export async function deleteWikiPage(path: string, projectId?: string): Promise<void> {
+  const resp = await fetch(withProject(`${API_BASE}/api/wiki/page?path=${encodeURIComponent(path)}`, projectId), { method: 'DELETE' });
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
 }
 
-export async function fetchWikiGraph(): Promise<WikiGraph> {
-  const resp = await fetch(`${API_BASE}/api/wiki/graph`);
-  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
-  const data = await resp.json();
-  return data.data;
-}
-
-export async function fetchGraphInsights(): Promise<GraphInsights> {
-  const resp = await fetch(`${API_BASE}/api/wiki/graph/insights`);
+export async function fetchWikiGraph(projectId?: string): Promise<WikiGraph> {
+  const resp = await fetch(withProject(`${API_BASE}/api/wiki/graph`, projectId));
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
   const data = await resp.json();
   return data.data;
 }
 
-export async function searchGraph(query: string): Promise<{ nodes: any[]; edges: any[] }> {
-  const resp = await fetch(`${API_BASE}/api/wiki/graph/search?q=${encodeURIComponent(query)}`);
+export async function fetchGraphInsights(projectId?: string): Promise<GraphInsights> {
+  const resp = await fetch(withProject(`${API_BASE}/api/wiki/graph/insights`, projectId));
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
   const data = await resp.json();
   return data.data;
 }
 
-export async function searchWiki(query: string, limit = 10): Promise<SearchResult[]> {
-  const resp = await fetch(`${API_BASE}/api/wiki/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+export async function searchGraph(query: string, projectId?: string): Promise<{ nodes: any[]; edges: any[] }> {
+  const resp = await fetch(withProject(`${API_BASE}/api/wiki/graph/search?q=${encodeURIComponent(query)}`, projectId));
+  if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data;
+}
+
+export async function searchWiki(query: string, limit = 10, projectId?: string): Promise<SearchResult[]> {
+  const resp = await fetch(withProject(`${API_BASE}/api/wiki/search?q=${encodeURIComponent(query)}&limit=${limit}`, projectId));
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
   const data = await resp.json();
   return data.data;
@@ -122,11 +157,12 @@ export async function searchWiki(query: string, limit = 10): Promise<SearchResul
 
 // ─── 摄入 ──────────────────────────────────────────────────
 
-export async function ingestFile(file: File, onProgress: (evt: any) => void): Promise<any> {
+export async function ingestFile(file: File, onProgress: (evt: any) => void, projectId?: string): Promise<any> {
   const form = new FormData();
   form.append('file', file);
 
-  const resp = await fetch(`${API_BASE}/api/ingest`, { method: 'POST', body: form });
+  const url = withProject(`${API_BASE}/api/ingest`, projectId);
+  const resp = await fetch(url, { method: 'POST', body: form });
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
 
   const reader = resp.body!.getReader();
@@ -160,8 +196,9 @@ export async function ingestFile(file: File, onProgress: (evt: any) => void): Pr
 
 // ─── 研究 ──────────────────────────────────────────────────
 
-export async function deepResearch(topic: string, keywords?: string[], onProgress?: (evt: any) => void): Promise<any> {
-  const resp = await fetch(`${API_BASE}/api/research`, {
+export async function deepResearch(topic: string, keywords?: string[], onProgress?: (evt: any) => void, projectId?: string): Promise<any> {
+  const url = withProject(`${API_BASE}/api/research`, projectId);
+  const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ topic, keywords }),
@@ -199,15 +236,15 @@ export async function deepResearch(topic: string, keywords?: string[], onProgres
 
 // ─── 审阅项 ────────────────────────────────────────────────
 
-export async function fetchReviews(): Promise<ReviewItem[]> {
-  const resp = await fetch(`${API_BASE}/api/reviews`);
+export async function fetchReviews(projectId?: string): Promise<ReviewItem[]> {
+  const resp = await fetch(withProject(`${API_BASE}/api/reviews`, projectId));
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
   const data = await resp.json();
   return data.data;
 }
 
-export async function resolveReview(id: string, action: string): Promise<void> {
-  const resp = await fetch(`${API_BASE}/api/reviews/${id}/resolve?action=${encodeURIComponent(action)}`, { method: 'POST' });
+export async function resolveReview(id: string, action: string, projectId?: string): Promise<void> {
+  const resp = await fetch(withProject(`${API_BASE}/api/reviews/${id}/resolve?action=${encodeURIComponent(action)}`, projectId), { method: 'POST' });
   if (!resp.ok) throw new Error(`Failed: ${resp.status}`);
 }
 

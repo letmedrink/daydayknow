@@ -1,5 +1,5 @@
 {
-  "name": "daydayknow-frontend",
+  "name": "llmwiki-frontend",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -14,7 +14,8 @@
     "react-dom": "^19.0.0",
     "react-force-graph-2d": "^1.29.1",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.15.1"
+    "react-router-dom": "^7.15.1",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

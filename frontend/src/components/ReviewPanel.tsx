@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { fetchReviews, resolveReview } from '../lib/api';
+import { useProject } from '../contexts/ProjectContext';
 import type { ReviewItem } from '../types';
 
 const TYPE_LABELS: Record<string, string> = {
@@ -10,17 +11,18 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 export function ReviewPanel() {
+  const { activeProjectId } = useProject();
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadReviews();
-  }, []);
+  }, [activeProjectId]);
 
   const loadReviews = async () => {
     setLoading(true);
     try {
-      const data = await fetchReviews();
+      const data = await fetchReviews(activeProjectId);
       setReviews(data.filter((r: ReviewItem) => !r.resolved));
     } catch (e) {
       console.error(e);
@@ -31,7 +33,7 @@ export function ReviewPanel() {
 
   const handleResolve = async (id: string, action: string) => {
     try {
-      await resolveReview(id, action);
+      await resolveReview(id, action, activeProjectId);
       setReviews((prev) => prev.filter((r) => r.id !== id));
     } catch (e) {
       console.error(e);

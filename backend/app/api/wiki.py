@@ -1,12 +1,16 @@
 """Wiki 页面/图谱/搜索 API。"""
+import mimetypes
+from pathlib import Path
 from fastapi import APIRouter, Depends, Query, HTTPException
-from ..dependencies import get_wiki_store
+from fastapi.responses import FileResponse
+from ..dependencies import get_active_wiki_store, get_project_store
+from ..config import settings
 
 router = APIRouter(prefix="/api/wiki")
 
 
 @router.get("/pages")
-async def list_pages(wiki_store=Depends(get_wiki_store)):
+async def list_pages(wiki_store=Depends(get_active_wiki_store)):
     """列出所有 wiki 页面（树形）。"""
     tree = wiki_store.build_file_tree()
     pages = wiki_store.list_pages()
@@ -14,7 +18,7 @@ async def list_pages(wiki_store=Depends(get_wiki_store)):
 
 
 @router.get("/page")
-async def get_page(path: str = Query(...), wiki_store=Depends(get_wiki_store)):
+async def get_page(path: str = Query(...), wiki_store=Depends(get_active_wiki_store)):
     """读取单个 wiki 页面。"""
     page = wiki_store.read_page(path)
     if not page:
@@ -23,7 +27,7 @@ async def get_page(path: str = Query(...), wiki_store=Depends(get_wiki_store)):
 
 
 @router.delete("/page")
-async def delete_page(path: str = Query(...), wiki_store=Depends(get_wiki_store)):
+async def delete_page(path: str = Query(...), wiki_store=Depends(get_active_wiki_store)):
     """删除 wiki 页面。"""
     if not wiki_store.delete_page(path):
         raise HTTPException(status_code=404, detail="页面不存在")
@@ -31,28 +35,47 @@ async def delete_page(path: str = Query(...), wiki_store=Depends(get_wiki_store)
 
 
 @router.get("/graph")
-async def get_graph(wiki_store=Depends(get_wiki_store)):
+async def get_graph(wiki_store=Depends(get_active_wiki_store)):
     """获取知识图谱（节点+边+社区+maxLinks）。"""
     graph = wiki_store.build_graph()
     return {"success": True, "data": graph}
 
 
 @router.get("/graph/insights")
-async def get_graph_insights(wiki_store=Depends(get_wiki_store)):
+async def get_graph_insights(wiki_store=Depends(get_active_wiki_store)):
     """获取图谱洞察（Surprising Connections + Knowledge Gaps）。"""
     insights = wiki_store.graph_insights()
     return {"success": True, "data": insights}
 
 
+@router.get("/media/{path:path}")
+async def serve_media(path: str, project_id: str = Query("default"), project_store=Depends(get_project_store)):
+    """提供 wiki/media/ 下的图片等静态文件。"""
+    project_dir = project_store.get_project_dir(project_id)
+    if not project_dir:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    file_path = project_dir / "wiki" / "media" / path
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    # 安全检查：防止路径穿越
+    media_root = (project_dir / "wiki" / "media").resolve()
+    try:
+        file_path.resolve().relative_to(media_root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="禁止访问")
+    media_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    return FileResponse(file_path, media_type=media_type)
+
+
 @router.get("/search")
-async def search_wiki(q: str = Query(...), limit: int = Query(10), wiki_store=Depends(get_wiki_store)):
+async def search_wiki(q: str = Query(...), limit: int = Query(10), wiki_store=Depends(get_active_wiki_store)):
     """搜索 wiki 页面。"""
     results = wiki_store.search(q, max_results=limit)
     return {"success": True, "data": results}
 
 
 @router.get("/graph/search")
-async def search_graph(q: str = Query(...), wiki_store=Depends(get_wiki_store)):
+async def search_graph(q: str = Query(...), wiki_store=Depends(get_active_wiki_store)):
     """搜索图谱节点。"""
     graph = wiki_store.build_graph()
     query_lower = q.lower()

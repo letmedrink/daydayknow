@@ -17,6 +17,7 @@ export interface WikiReference {
 
 export interface SSECallbacks {
   onChunk: (content: string) => void;
+  onReasoning?: (content: string) => void;
   onDone: (conversationId: string) => void;
   onOptions: (options: GuidedOption[]) => void;
   onReferences: (references: WikiReference[]) => void;
@@ -142,6 +143,7 @@ export interface AppSettings {
   activeProviderId: string;
   searchApiConfig: Record<string, string>;
   outputLanguage: string;
+  multimodalModel?: string;
 }
 
 export interface UserProfile {

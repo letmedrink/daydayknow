@@ -63,6 +63,23 @@ export function KnowledgeGraph({ nodes, edges, height = 300, highlight, onNodeCl
   const containerRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
   const [tooltip, setTooltip] = useState<{ left: number; top: number; data: any } | null>(null);
+  const [containerWidth, setContainerWidth] = useState(400);
+
+  // 监听容器宽度变化
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w > 0) setContainerWidth(w);
+      }
+    });
+    ro.observe(el);
+    // 初始宽度
+    if (el.clientWidth > 0) setContainerWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
 
   const nodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
 
@@ -96,8 +113,26 @@ export function KnowledgeGraph({ nodes, edges, height = 300, highlight, onNodeCl
   }, [nodes, edges]);
 
   useEffect(() => {
-    if (fgRef.current) fgRef.current.d3ReheatSimulation();
-  }, [graphData]);
+    if (!fgRef.current) return;
+    const n = nodes.length;
+    // 节点越多，斥力越大，间距越宽
+    const chargeStrength = n > 200 ? -200 : n > 80 ? -150 : -100;
+    // 链接距离：节点越少越宽松
+    const linkDistance = n > 200 ? 60 : n > 80 ? 80 : 120;
+
+    const fg = fgRef.current;
+    // 配置斥力
+    const charge = fg.d3Force('charge');
+    if (charge) charge.strength(chargeStrength);
+    // 配置链接力
+    const link = fg.d3Force('link');
+    if (link) link.distance(linkDistance);
+    // 配置居中力
+    const center = fg.d3Force('center');
+    if (center) center.strength(0.05);
+
+    fg.d3ReheatSimulation();
+  }, [graphData, nodes.length, containerWidth]);
 
   const handleNodeHover = useCallback((node: any) => {
     if (!node || !fgRef.current || !containerRef.current) {
@@ -139,7 +174,7 @@ export function KnowledgeGraph({ nodes, edges, height = 300, highlight, onNodeCl
       <ForceGraph2D
         ref={fgRef}
         graphData={graphData}
-        width={containerRef.current?.clientWidth || 400}
+        width={containerWidth}
         height={height}
         nodeLabel="name"
         nodeColor="color"
@@ -173,24 +208,9 @@ export function KnowledgeGraph({ nodes, edges, height = 300, highlight, onNodeCl
           const intensity = Math.round(140 + w * 60);
           return `rgb(${intensity}, ${intensity - 9}, ${intensity - 15})`;
         }}
-        linkCanvasObject={(link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
-          if (!link.label) return;
-          const alpha = linkOpacity(link);
-          if (alpha < 0.5) return;
-          const start = link.source;
-          const end = link.target;
-          if (typeof start !== 'object' || typeof end !== 'object') return;
-          const midX = (start.x + end.x) / 2;
-          const midY = (start.y + end.y) / 2;
-          const fontSize = 8 / globalScale;
-          ctx.font = `${fontSize}px sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillStyle = '#8a8078';
-          ctx.fillText(link.label, midX, midY - 4 / globalScale);
-        }}
-        linkCanvasObjectMode={() => 'after'}
-        cooldownTicks={100}
+        d3AlphaDecay={0.02}
+        d3VelocityDecay={0.3}
+        cooldownTicks={150}
         onEngineStop={() => fgRef.current?.pauseAnimation()}
         onNodeHover={handleNodeHover}
         onNodeClick={(node: any) => { if (onNodeClick && node?.id) onNodeClick(node.id); }}

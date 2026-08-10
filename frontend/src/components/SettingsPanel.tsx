@@ -115,12 +115,14 @@ export function SettingsPanel() {
   const [testResults, setTestResults] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [multimodalModel, setMultimodalModel] = useState('');
 
   useEffect(() => {
     fetchSettings().then((s) => {
       setSettings(s);
       setProviders(s.llmProviders || {});
       setActiveId(s.activeProviderId || '');
+      setMultimodalModel(s.multimodalModel || '');
     }).catch(console.error);
   }, []);
 
@@ -171,6 +173,7 @@ export function SettingsPanel() {
       await updateSettings({
         llmProviders: providers,
         activeProviderId: activeId,
+        multimodalModel,
       });
       setTestResults({ _saved: '已保存' });
     } catch (e: any) {
@@ -353,6 +356,19 @@ export function SettingsPanel() {
           </div>
         );
       })}
+
+      {/* 多模态模型配置 */}
+      <div style={styles.section}>🖼️ 多模态模型（图片描述）</div>
+      <p style={styles.desc}>用于 PDF/PPTX/DOCX 中提取的图片自动生成描述，复用当前激活模型的 API Key 和 Base URL</p>
+      <div style={{ marginBottom: 16 }}>
+        <label style={styles.label}>模型名称</label>
+        <input
+          style={styles.input}
+          value={multimodalModel}
+          onChange={(e) => setMultimodalModel(e.target.value)}
+          placeholder="如 gpt-4o-mini、qwen-vl-plus（留空则跳过图片描述）"
+        />
+      </div>
 
       <div style={styles.footer}>
         <button style={styles.saveBtn} onClick={handleSave} disabled={saving}>

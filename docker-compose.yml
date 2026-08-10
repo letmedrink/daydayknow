@@ -10,7 +10,7 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: daydayknow
+      POSTGRES_DB: llmwiki
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     volumes:
@@ -38,7 +38,7 @@ services:
     command: python worker.py
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/daydayknow
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/llmwiki
     env_file:
       - ./backend/.env.docker
     depends_on:
@@ -98,7 +98,7 @@ services:
     environment:
       - MOCK_MODE=true
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/daydayknow
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/llmwiki
     env_file:
       - ./backend/.env.docker
     depends_on:
@@ -117,7 +117,7 @@ services:
     environment:
       - MOCK_MODE=false
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/daydayknow
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/llmwiki
     env_file:
       - ./backend/.env.docker
     depends_on:

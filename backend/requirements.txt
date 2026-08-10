@@ -1,4 +1,4 @@
-# 知微 (DayDayKnow) 后端依赖
+# llmwiki 后端依赖
 
 # Web 框架
 fastapi>=0.100.0

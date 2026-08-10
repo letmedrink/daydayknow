@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from ..dependencies import get_file_store, get_wiki_store
+from ..dependencies import get_active_file_store, get_active_wiki_store
 from ..storage import FileStore, WikiStore
 
 router = APIRouter(prefix="/api/research")
@@ -20,8 +20,8 @@ class ResearchRequest(BaseModel):
 @router.post("")
 async def deep_research(
     req: ResearchRequest,
-    file_store: FileStore = Depends(get_file_store),
-    wiki_store: WikiStore = Depends(get_wiki_store),
+    file_store: FileStore = Depends(get_active_file_store),
+    wiki_store: WikiStore = Depends(get_active_wiki_store),
 ):
     """触发 Deep Research（SSE 实时返回进度）。"""
     if not req.topic.strip():

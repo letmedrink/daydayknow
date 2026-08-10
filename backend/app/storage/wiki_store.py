@@ -1,4 +1,12 @@
-"""Wiki .md 文件存储 — 读写、列表、frontmatter 解析、图谱构建。"""
+"""Wiki .md 文件存储 — 读写、列表、frontmatter 解析、图谱构建、图谱洞察。
+
+核心概念：
+- Wiki 页面按类型分目录存储（entities/ concepts/ sources/ 等 9 类）
+- 每页是 Markdown + YAML frontmatter，通过 [[wikilink]] 交叉引用
+- 图谱实时从文件构建（无数据库缓存），边权重由 4 维信号复合评分
+- 社区检测使用加权连通分量，内聚度衡量社区紧密程度
+- 图谱洞察包含"意外连接"和"知识缺口"两类分析
+"""
 
 import os
 import re
@@ -397,7 +405,8 @@ class WikiStore:
                 })
 
         results.sort(key=lambda r: r["score"], reverse=True)
-        return results[:max_results]
+        # 过滤低相关度：至少匹配 2 分（1 个 bigram 标题=3，1 个 bigram 正文=1）
+        return [r for r in results if r["score"] >= 2][:max_results]
 
     # ─── 内部方法 ──────────────────────────────────────────────
 
@@ -480,19 +489,16 @@ def _build_tree(root: Path, current: Path) -> list[dict]:
 
 
 def _tokenize(text: str) -> list[str]:
-    """简单分词：英文按空格，中文按字符（bigram）。"""
+    """简单分词：英文按空格，中文按 bigram（跳过单字避免噪声）。"""
     tokens = []
     # 英文单词
     for word in re.findall(r"[a-z0-9]+", text):
         if len(word) >= 2:
             tokens.append(word)
-    # 中文字符 bigram
+    # 中文字符 bigram（足够匹配词义，避免单字噪声）
     cn_chars = re.findall(r"[一-鿿]", text)
     for i in range(len(cn_chars) - 1):
         tokens.append(cn_chars[i] + cn_chars[i + 1])
-    # 单个中文字符也作为 token
-    for ch in cn_chars:
-        tokens.append(ch)
     return tokens
 
 
@@ -519,20 +525,27 @@ def _calc_edge_weight(
     in_links: dict[str, set[str]],
     node_map: dict[str, dict],
 ) -> float:
-    """计算边权重：4 信号复合评分。"""
+    """计算边权重：4 信号复合评分。
+
+    信号说明：
+    1. 直接 [[wikilink]] 链接 — 基础分 3.0（必然存在，因为边由此产生）
+    2. 共享来源文档 — 每共享一个来源 +4.0（最强信号，同一文档引出的概念关联度高）
+    3. Adamic-Adar 共同邻居 — 共邻度 / √deg，压低大度节点的噪声
+    4. 类型亲和度 — 预设类型组合的加分（entity↔concept, finding↔thesis 等）
+    """
     score = 0.0
 
-    # 1. 直接链接（必然存在，基础分）
+    # 信号 1：直接链接（基础分）
     score += 3.0
 
-    # 2. 共享来源文档
+    # 信号 2：共享来源文档（每共享一个 +4.0）
     src_sources = set(node_map.get(src, {}).get("sources", []))
     tgt_sources = set(node_map.get(tgt, {}).get("sources", []))
     if src_sources and tgt_sources:
         shared = len(src_sources & tgt_sources)
         score += shared * 4.0
 
-    # 3. Adamic-Adar 共邻
+    # 信号 3：Adamic-Adar 共邻（log 阻尼大度节点）
     src_neighbors = out_links.get(src, set()) | in_links.get(src, set())
     tgt_neighbors = out_links.get(tgt, set()) | in_links.get(tgt, set())
     common = src_neighbors & tgt_neighbors
@@ -542,7 +555,7 @@ def _calc_edge_weight(
             if deg > 1:
                 score += 1.5 / (deg ** 0.5)
 
-    # 4. 类型亲和度
+    # 信号 4：类型亲和度（预设类型组合加分）
     type_affinity = {
         ("entity", "concept"): 1.2,
         ("concept", "entity"): 1.2,
@@ -561,7 +574,15 @@ def _calc_edge_weight(
 
 
 def _detect_communities_weighted(nodes: list[dict], edges: list[dict]) -> list[dict]:
-    """加权连通分量社区检测（带内聚度和 top 节点统计）。"""
+    """加权连通分量社区检测。
+
+    算法步骤：
+    1. 构建邻接表（无向图）
+    2. BFS 找出所有连通分量（每个分量 = 一个社区）
+    3. 计算每个社区的内聚度（cohesion）——实际边数 / 最大可能边数
+    4. 按社区大小降序排列，top-5 节点作为社区代表
+    """
+    # 构建邻接表（无向图）
     adj: dict[str, set[str]] = {}
     for n in nodes:
         adj[n["id"]] = set()
@@ -573,6 +594,7 @@ def _detect_communities_weighted(nodes: list[dict], edges: list[dict]) -> list[d
     communities = []
     node_map = {n["id"]: n for n in nodes}
 
+    # BFS 找连通分量
     for n in nodes:
         nid = n["id"]
         if nid in visited:
@@ -591,7 +613,7 @@ def _detect_communities_weighted(nodes: list[dict], edges: list[dict]) -> list[d
         if not component:
             continue
 
-        # 计算内聚度
+        # 计算内聚度：社区内部实际边数 / 最大可能边数
         intra_edges = 0
         for e in edges:
             if e["source"] in set(component) and e["target"] in set(component):
@@ -600,7 +622,7 @@ def _detect_communities_weighted(nodes: list[dict], edges: list[dict]) -> list[d
         max_possible = n_nodes * (n_nodes - 1) / 2 if n_nodes > 1 else 1
         cohesion = round(intra_edges / max_possible, 3) if max_possible > 0 else 0
 
-        # Top 节点（按 linkCount 排序）
+        # 取社区内 linkCount top-5 节点作为代表
         comp_nodes = [(nid, node_map.get(nid, {}).get("linkCount", 0)) for nid in component]
         comp_nodes.sort(key=lambda x: x[1], reverse=True)
         top_nodes = [nid for nid, _ in comp_nodes[:5]]
@@ -613,14 +635,12 @@ def _detect_communities_weighted(nodes: list[dict], edges: list[dict]) -> list[d
             "topNodes": top_nodes,
         })
 
-    # 按 size 降序排序，重新编号
+    # 按社区大小降序排序，重新编号
     communities.sort(key=lambda c: c["size"], reverse=True)
     for i, c in enumerate(communities):
         c["id"] = i
 
     return communities
-
-
 def _find_surprising_connections(
     nodes: list[dict],
     edges: list[dict],
@@ -628,7 +648,14 @@ def _find_surprising_connections(
     node_map: dict[str, dict],
     adj: dict[str, set[str]],
 ) -> list[dict]:
-    """发现跨社区/跨类型的意外连接。"""
+    """发现跨社区/跨类型的意外连接。
+
+    评分规则：
+    - 跨社区连接：+3（不同社区间有边，意味着潜在的知识融合点）
+    - 跨类型连接：+1~2（entity↔concept 额外 +1）
+    - 桥接节点连接：+2（至少一端连接 3+ 社区）
+    - 返回 score ≥ 3 的连接，按分数降序，最多 10 条
+    """
     scored = []
 
     for e in edges:
@@ -686,7 +713,12 @@ def _detect_knowledge_gaps(
     comm_map: dict[str, int],
     adj: dict[str, set[str]],
 ) -> list[dict]:
-    """检测知识缺口：孤立节点、稀疏社区、桥接节点。"""
+    """检测三类知识缺口。
+
+    1. 孤立节点：度 ≤ 1，缺少交叉引用，建议深入研究
+    2. 稀疏社区：≥3 个节点但内聚度 < 0.15，内部连接不足
+    3. 桥接节点：连接 3+ 社区，扩展它能增强整个知识网络
+    """
     gaps = []
     node_map = {n["id"]: n for n in nodes}
 

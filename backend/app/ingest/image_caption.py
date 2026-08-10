@@ -22,7 +22,13 @@ async def caption_images(
     Returns:
         带 caption 字段的图片列表
     """
-    if not settings.MULTIMODAL_MODEL and not settings.MULTIMODAL_API_KEY:
+    # 从环境变量或 settings.json 获取多模态模型配置
+    multimodal_model = settings.MULTIMODAL_MODEL
+    if not multimodal_model:
+        stored = file_store.get_settings()
+        multimodal_model = stored.get("multimodalModel", "")
+
+    if not multimodal_model and not settings.MULTIMODAL_API_KEY:
         # 没有配置多模态模型，跳过
         for img in images:
             img["caption"] = ""
@@ -35,7 +41,7 @@ async def caption_images(
         if cached:
             img["caption"] = cached
         else:
-            caption = await _generate_caption(img)
+            caption = await _generate_caption(img, multimodal_model)
             img["caption"] = caption
             if caption:
                 file_store.save_image_caption(img["sha256"], caption)
@@ -44,7 +50,7 @@ async def caption_images(
     return results
 
 
-async def _generate_caption(image_info: dict) -> str:
+async def _generate_caption(image_info: dict, multimodal_model: str = "") -> str:
     """调用视觉模型生成单张图片描述。"""
     try:
         import httpx
@@ -69,7 +75,7 @@ async def _generate_caption(image_info: dict) -> str:
         # 构建请求
         base_url = settings.MULTIMODAL_BASE_URL or settings.LLM_BASE_URL or "https://api.openai.com/v1"
         api_key = settings.MULTIMODAL_API_KEY or settings.LLM_API_KEY
-        model = settings.MULTIMODAL_MODEL or "gpt-4o-mini"
+        model = multimodal_model or settings.MULTIMODAL_MODEL or "gpt-4o-mini"
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(

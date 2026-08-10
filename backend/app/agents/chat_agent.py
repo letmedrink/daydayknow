@@ -1,4 +1,18 @@
-"""对话 Agent — wiki 上下文检索 + 引导选项生成。"""
+"""对话 Agent — wiki 上下文检索 + 流式对话 + 引导选项生成。
+
+核心流程：
+1. 用户提问 → 分词匹配 wiki 页面 + 1-hop 图谱邻居扩展
+2. 注入 wiki 上下文 + 用户画像到 system prompt
+3. 流式 LLM 调用（SSE），支持 reasoning/content 分离
+4. 从响应末尾解析 OPTIONS 行，生成引导选项
+5. 持久化消息（含 <think> 推理标签）
+
+系统 prompt 结构：
+- 角色定义 + 回答要求
+- 用户画像（学习风格、认知模式、兴趣领域）
+- 相关知识库内容（wiki 页面摘要）
+- 输出规则（引导选项格式）
+"""
 
 import json
 import re
@@ -20,7 +34,7 @@ PRESET_OPTIONS = [
     {"label": "给个例子", "action": "给个例子"},
 ]
 
-SYSTEM_PROMPT_TEMPLATE = """你是一位知识学习助手，名叫"知微"。你的特点：
+SYSTEM_PROMPT_TEMPLATE = """你是一位知识学习助手，名叫"llmwiki"。你的特点：
 
 1. 基于用户的知识库（wiki）回答问题，引用相关知识
 2. 回答结束后，输出一行引导选项让用户选择继续学习方向
@@ -93,12 +107,36 @@ class ChatAgent:
             messages.append({"role": msg["role"], "content": msg["content"]})
         messages.append({"role": "user", "content": message})
 
-        full_response = ""
+        full_response = ""      # 仅内容（不含 reasoning）
+        stored_response = ""    # 含 <think> 标签的完整内容（用于持久化）
+        thinking_open = False
+
         async for chunk in self._stream_chunks(messages):
-            full_response += chunk
-            yield {"type": "chunk", "content": chunk}
+            if chunk["type"] == "reasoning":
+                if not thinking_open:
+                    thinking_open = True
+                    stored_response += "<think>"
+                stored_response += chunk["content"]
+                yield {"type": "reasoning", "content": chunk["content"]}
+            else:
+                if thinking_open:
+                    thinking_open = False
+                    stored_response += "</think>"
+                full_response += chunk["content"]
+                stored_response += chunk["content"]
+                yield {"type": "chunk", "content": chunk["content"]}
+
+        # 确保思考标签关闭
+        if thinking_open:
+            stored_response += "</think>"
 
         options, clean_response = self._parse_options(full_response)
+        # 持久化用的完整响应（含 <think> 标签，OPTIONS 已剥离）
+        stored_clean = stored_response
+        if options:
+            # 从 stored 中也剥离 OPTIONS 行
+            import re as _re
+            stored_clean = _re.sub(r"OPTIONS:\s*.+$", "", stored_response, flags=_re.MULTILINE).strip()
 
         if references:
             yield {"type": "references", "references": references}
@@ -106,13 +144,20 @@ class ChatAgent:
 
         self.file_store.add_message(conversation_id, "user", message)
         self.file_store.add_message(
-            conversation_id, "assistant", clean_response,
+            conversation_id, "assistant", stored_clean,
             references=references,
             options=options if options else PRESET_OPTIONS,
         )
 
     def _retrieve_wiki_context(self, query: str) -> tuple[str, list[dict]]:
-        """检索相关 wiki 页面，返回 (context_text, references)。"""
+        """检索相关 wiki 页面，返回 (context_text, references)。
+
+        检索策略：分词匹配 + 图谱 1-hop 邻居扩展
+        1. 用查询分词匹配 wiki 标题和正文（标题权重 ×3，正文 ×1）
+        2. 对匹配到的页面，沿 [[wikilink]] 提取前 3 个 1-hop 邻居
+        3. 用上下文预算管理器控制注入到 system prompt 的总字符数
+        4. 邻居页截断为 max_page_size / 2，信息密度低于直接匹配页
+        """
         budget = compute_context_budget()
         search_results = self.wiki_store.search(query, max_results=5)
 
@@ -123,6 +168,7 @@ class ChatAgent:
         pages = []
         total = 0
 
+        # 第一轮：直接匹配的页面（完整注入）
         for r in search_results:
             if total >= budget.page_budget:
                 break
@@ -142,7 +188,7 @@ class ChatAgent:
             pages.append({"title": r["title"], "path": path, "body": body})
             total += len(body)
 
-            # 1 跳邻居
+            # 1-hop 邻居扩展：沿 [[wikilink]] 找到关联页面（半长注入）
             for link in extract_wikilinks(body)[:3]:
                 for np in self.wiki_store.list_pages():
                     if np["name"].lower() == link.lower() and np["path"] not in visited:
@@ -152,7 +198,7 @@ class ChatAgent:
                         nd = self.wiki_store.read_page(np["path"])
                         if nd:
                             nb = nd["body"]
-                            half = budget.max_page_size // 2
+                            half = budget.max_page_size // 2  # 邻居只取半长
                             if len(nb) > half:
                                 nb = nb[:half] + "\n\n...(已截断)"
                             pages.append({"title": np["title"], "path": np["path"], "body": nb})

@@ -26,6 +26,7 @@ class SettingsUpdate(BaseModel):
     active_provider_id: Optional[str] = Field(default=None, alias="activeProviderId")
     search_api_config: Optional[dict] = Field(default=None, alias="searchApiConfig")
     output_language: Optional[str] = Field(default=None, alias="outputLanguage")
+    multimodal_model: Optional[str] = Field(default=None, alias="multimodalModel")
 
     model_config = {"populate_by_name": True}
 
@@ -52,6 +53,8 @@ async def update_settings(
         updates["searchApiConfig"] = req.search_api_config
     if req.output_language is not None:
         updates["outputLanguage"] = req.output_language
+    if req.multimodal_model is not None:
+        updates["multimodalModel"] = req.multimodal_model
 
     result = file_store.update_settings(**updates)
     return {"success": True, "data": result}

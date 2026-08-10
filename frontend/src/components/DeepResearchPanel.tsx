@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { deepResearch } from '../lib/api';
+import { useProject } from '../contexts/ProjectContext';
 
 export function DeepResearchPanel() {
+  const { activeProjectId } = useProject();
   const [topic, setTopic] = useState('');
   const [keywords, setKeywords] = useState('');
   const [progress, setProgress] = useState<any[]>([]);
@@ -22,6 +24,7 @@ export function DeepResearchPanel() {
         topic,
         kwList.length > 0 ? kwList : undefined,
         (evt) => setProgress((prev) => [...prev, evt]),
+        activeProjectId,
       );
       setResult(res);
     } catch (e: any) {
