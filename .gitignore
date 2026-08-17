@@ -1,0 +1,31 @@
+# JavaScript
+node_modules/
+.next/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/data/
+
+# Local configuration (examples stay tracked)
+.env
+.env.local
+.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# Tools and OS
+.DS_Store
+.claude/
+.vscode/
+.idea/
+*.log
+tmp/
+temp/

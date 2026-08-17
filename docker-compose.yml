@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    expose:
+      - "8000"
+    env_file:
+      - path: ./backend/.env
+        required: false
+    volumes:
+      - llmwiki-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  llmwiki-data:

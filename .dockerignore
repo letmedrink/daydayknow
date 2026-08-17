@@ -1,0 +1,14 @@
+.git
+.github
+.next
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/dist
+backend/data
+examples
+docs
+*.log
+.DS_Store
+.env*
