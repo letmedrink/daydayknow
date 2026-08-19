@@ -10,10 +10,10 @@
 
 import os
 import re
-import os
 import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -211,12 +211,170 @@ class WikiStore:
             raise ValueError("非法 Wiki 页面路径")
         with self._index_lock:
             full_path.parent.mkdir(parents=True, exist_ok=True)
+            if full_path.exists():
+                self._backup_page(rel_path, self.read_page(rel_path))
             if append and full_path.exists():
                 existing = full_path.read_text(encoding="utf-8")
                 content = existing.rstrip() + "\n\n" + content.strip() + "\n"
             self._atomic_write_text(full_path, content)
             self._invalidate_path(rel_path)
         return rel_path
+
+    def rename_page(self, old_path: str, new_path: str, update_links: bool = True) -> dict:
+        """Rename a page atomically and optionally rewrite matching wikilinks."""
+        source = self._safe_page_path(old_path)
+        target = self._safe_page_path(new_path)
+        if not source or not target:
+            raise ValueError("非法 Wiki 页面路径")
+        if not source.exists():
+            raise FileNotFoundError("页面不存在")
+        if target.exists() and target != source:
+            raise FileExistsError("目标页面已存在")
+        if source == target:
+            return {"path": new_path, "updated_links": []}
+
+        with self._index_lock:
+            affected: dict[str, bytes] = {old_path: source.read_bytes()}
+            old_name = source.stem
+            new_name = target.stem
+            if update_links:
+                self._refresh_index()
+                patterns = {old_name}
+                source_page = self._page_cache.get(old_path)
+                if source_page:
+                    patterns.add(str((source_page.get("frontmatter") or {}).get("title") or old_name))
+                for rel_path, cached in list(self._page_cache.items()):
+                    if rel_path == old_path:
+                        continue
+                    body = cached.get("body", "")
+                    if any(f"[[{name}]]" in body for name in patterns):
+                        page_path = self._safe_page_path(rel_path)
+                        if page_path:
+                            affected[rel_path] = page_path.read_bytes()
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self._backup_page(old_path, self.read_page(old_path))
+                self._atomic_write_bytes(target, affected[old_path])
+                source.unlink()
+                updated_links = []
+                for rel_path, original in affected.items():
+                    if rel_path == old_path:
+                        continue
+                    text = original.decode("utf-8")
+                    for name in patterns:
+                        text = text.replace(f"[[{name}]]", f"[[{new_name}]]")
+                    page_path = self._safe_page_path(rel_path)
+                    assert page_path is not None
+                    self._backup_page(rel_path, self.read_page(rel_path))
+                    self._atomic_write_text(page_path, text)
+                    updated_links.append(rel_path)
+            except BaseException:
+                target.unlink(missing_ok=True)
+                self._atomic_write_bytes(source, affected[old_path])
+                for rel_path, original in affected.items():
+                    if rel_path != old_path:
+                        page_path = self._safe_page_path(rel_path)
+                        if page_path:
+                            self._atomic_write_bytes(page_path, original)
+                raise
+            finally:
+                for rel_path in {*affected, new_path}:
+                    self._invalidate_path(rel_path)
+            return {"path": new_path, "updated_links": updated_links}
+
+    def merge_pages(self, source_paths: list[str], target_path: str) -> dict:
+        """Merge source page bodies into a target and rewrite links to the target."""
+        unique_sources = list(dict.fromkeys(path for path in source_paths if path != target_path))
+        target = self.read_page(target_path)
+        if not target:
+            raise FileNotFoundError("目标页面不存在")
+        sources = []
+        for path in unique_sources:
+            page = self.read_page(path)
+            if not page:
+                raise FileNotFoundError(f"待合并页面不存在: {path}")
+            sources.append((path, page))
+        if not sources:
+            raise ValueError("至少需要一个不同于目标的来源页面")
+
+        self._refresh_index()
+        target_title = str((target.get("frontmatter") or {}).get("title") or Path(target_path).stem)
+        replacements: dict[str, str] = {}
+        for path, page in sources:
+            replacements[Path(path).stem] = target_title
+            replacements[str((page.get("frontmatter") or {}).get("title") or Path(path).stem)] = target_title
+
+        affected = {target_path, *unique_sources}
+        rewritten: list[dict] = []
+        for rel_path, cached in list(self._page_cache.items()):
+            if rel_path in affected:
+                continue
+            raw = cached.get("rawBlock", "") + cached.get("body", "")
+            updated = raw
+            for old_title, new_title in replacements.items():
+                updated = updated.replace(f"[[{old_title}]]", f"[[{new_title}]]")
+            if updated != raw:
+                affected.add(rel_path)
+                rewritten.append({"path": rel_path, "content": updated, "merge": False})
+
+        snapshots = self.snapshot_pages(list(affected))
+        target_raw = target.get("rawBlock", "") + target.get("body", "").rstrip()
+        additions = []
+        for _, page in sources:
+            source_title = str((page.get("frontmatter") or {}).get("title") or "合并内容")
+            additions.append(f"\n\n## 合并自：{source_title}\n\n{page.get('body', '').strip()}")
+        try:
+            self.commit_pages([{"path": target_path, "content": target_raw + "".join(additions) + "\n", "merge": False}, *rewritten])
+            for path, page in sources:
+                self._backup_page(path, page)
+                source = self._safe_page_path(path)
+                assert source is not None
+                source.unlink()
+                self._invalidate_path(path)
+        except BaseException:
+            self.restore_pages(snapshots)
+            raise
+        return {"path": target_path, "merged": unique_sources, "updated_links": [page["path"] for page in rewritten]}
+
+    def list_page_history(self, rel_path: str) -> list[dict]:
+        if not self._safe_page_path(rel_path):
+            raise ValueError("非法 Wiki 页面路径")
+        history_dir = self._history_dir(rel_path)
+        if not history_dir.exists():
+            return []
+        versions = []
+        for version in sorted(history_dir.glob("*.md"), reverse=True):
+            stat = version.stat()
+            versions.append({
+                "id": version.name,
+                "createdAt": stat.st_mtime,
+                "size": stat.st_size,
+            })
+        return versions
+
+    def read_page_history(self, rel_path: str, version_id: str) -> Optional[dict]:
+        version = self._safe_history_path(rel_path, version_id)
+        if not version or not version.exists():
+            return None
+        parsed = parse_frontmatter(version.read_text(encoding="utf-8"))
+        return {**parsed, "id": version.name, "createdAt": version.stat().st_mtime}
+
+    def restore_page_history(self, rel_path: str, version_id: str) -> dict:
+        version = self._safe_history_path(rel_path, version_id)
+        if not version or not version.exists():
+            raise FileNotFoundError("历史版本不存在")
+        target = self._safe_page_path(rel_path)
+        if not target:
+            raise ValueError("非法 Wiki 页面路径")
+        with self._index_lock:
+            if target.exists():
+                self._backup_page(rel_path, self.read_page(rel_path))
+            self._atomic_write_bytes(target, version.read_bytes())
+            self._invalidate_path(rel_path)
+        restored = self.read_page(rel_path)
+        assert restored is not None
+        return restored
 
     def commit_pages(self, pages: list[dict]) -> list[str]:
         """Commit a generated page set as one best-effort filesystem transaction.
@@ -236,6 +394,9 @@ class WikiStore:
             try:
                 for page in pages:
                     rel_path = page["path"]
+                    existing_page = self.read_page(rel_path)
+                    if existing_page:
+                        self._backup_page(rel_path, existing_page)
                     parsed = parse_frontmatter(page["content"])
                     if parsed["frontmatter"]:
                         frontmatter = parsed["frontmatter"]
@@ -557,13 +718,29 @@ class WikiStore:
         """备份页面到 page-history/。"""
         if not page_data:
             return
-        backup_dir = self.wiki_dir.parent / "page-history"
+        backup_dir = self._history_dir(rel_path)
         backup_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = rel_path.replace("/", "_").replace("\\", "_")
-        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
-        backup_path = backup_dir / f"{safe_name}-{ts}.md"
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+        backup_path = backup_dir / f"{ts}-{uuid.uuid4().hex[:8]}.md"
         content = page_data.get("rawBlock", "") + page_data.get("body", "")
-        backup_path.write_text(content, encoding="utf-8")
+        self._atomic_write_text(backup_path, content)
+
+    def _history_dir(self, rel_path: str) -> Path:
+        page_path = self._safe_page_path(rel_path)
+        if not page_path:
+            raise ValueError("非法 Wiki 页面路径")
+        return self.wiki_dir.parent / "page-history" / Path(rel_path)
+
+    def _safe_history_path(self, rel_path: str, version_id: str) -> Optional[Path]:
+        if Path(version_id).name != version_id or not version_id.endswith(".md"):
+            return None
+        history_dir = self._history_dir(rel_path).resolve()
+        candidate = (history_dir / version_id).resolve()
+        try:
+            candidate.relative_to(history_dir)
+        except ValueError:
+            return None
+        return candidate
 
     def _invalidate_path(self, rel_path: str):
         with self._index_lock:
@@ -595,7 +772,9 @@ class WikiStore:
             current: dict[str, tuple[Path, tuple[int, int]]] = {}
             for md_file in self.wiki_dir.rglob("*.md"):
                 rel = md_file.relative_to(self.wiki_dir)
-                if len(rel.parts) < 2 or _dir_to_type(rel.parts[0]) is None:
+                # index.md/log.md live at the Wiki root; normal pages must remain
+                # inside one of the recognized type directories.
+                if len(rel.parts) > 1 and _dir_to_type(rel.parts[0]) is None:
                     continue
                 stat = md_file.stat()
                 current[str(rel)] = (md_file, (stat.st_mtime_ns, stat.st_size))
@@ -618,7 +797,7 @@ class WikiStore:
                 meta = {
                     "name": md_file.stem,
                     "path": rel_path,
-                    "type": _dir_to_type(rel.parts[0]),
+                    "type": _dir_to_type(rel.parts[0]) if len(rel.parts) > 1 else frontmatter.get("type", "other"),
                     "title": title,
                 }
                 title_tokens = set(_tokenize(str(title).lower()))

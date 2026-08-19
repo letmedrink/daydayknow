@@ -34,3 +34,11 @@ The same active provider configuration is used for text and image-caption reques
 Ingest generation does not mutate the live Wiki. The upload and generated proposals remain under the project `ingest-jobs/` directory until accepted or rejected. Running jobs interrupted by a restart become explicitly resumable rather than being presented as successful.
 
 Deep Research follows the same review-before-commit boundary in `research-jobs/`. Missing search configuration and zero-source searches fail closed. Review items can link to a research job and are resolved only after the generated pages are accepted and committed.
+
+Wiki mutations are exposed as project-scoped create/update, rename, merge, delete, history and restore operations. Replacements write a version under `page-history/`; rename and merge rewrite affected wikilinks and invalidate the shared search/graph runtime.
+
+Ingest proposals are editable and selectable before commit. A user can choose merge versus replacement per page or rerun the same durable job with additional generation instructions. The task center reads persisted ingest and research jobs, so review and retry state survives browser refreshes and backend restarts.
+
+Research results are canonicalized and deduplicated before use. Up to ten public HTTP(S) sources are fetched with private/link-local/loopback address rejection, readable text extraction, and stable citation identifiers. The synthesis and generation prompts preserve `[S<n>]` evidence markers.
+
+Project archives contain a versioned `llmwiki-project.json` manifest plus project files. Imports enforce entry-count and expanded-size limits, reject traversal and symlinks, and always create a new managed project.

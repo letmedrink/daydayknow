@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -411,6 +412,15 @@ class FileStore:
             raise FileNotFoundError("摄入任务不存在")
         return (self.data_dir / "ingest-jobs" / job_id / "source.bin").read_bytes()
 
+    def delete_ingest_job(self, job_id: str) -> bool:
+        job = self.get_ingest_job(job_id)
+        if not job:
+            return False
+        if job.get("status") in {"pending", "running"}:
+            raise ValueError("运行中的任务不能删除")
+        shutil.rmtree(self.data_dir / "ingest-jobs" / job_id)
+        return True
+
     # ─── Deep Research 任务 ───────────────────────────
 
     def create_research_job(self, topic: str, keywords: list[str], review_id: Optional[str] = None) -> dict:
@@ -460,6 +470,15 @@ class FileStore:
                 if updated:
                     recovered.append(updated)
         return recovered
+
+    def delete_research_job(self, job_id: str) -> bool:
+        job = self.get_research_job(job_id)
+        if not job:
+            return False
+        if job.get("status") in {"pending", "running"}:
+            raise ValueError("运行中的任务不能删除")
+        shutil.rmtree(self.data_dir / "research-jobs" / job_id)
+        return True
 
 
 def re_safe_id(value: str, prefix: str) -> bool:

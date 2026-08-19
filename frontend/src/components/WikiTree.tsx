@@ -14,9 +14,12 @@ export function WikiTree({ onBack }: { onBack?: () => void }) {
   const currentProject = projects.find((p) => p.id === activeProjectId);
 
   useEffect(() => {
-    fetchWikiPages(activeProjectId)
+    const load = () => fetchWikiPages(activeProjectId)
       .then((data) => setTree(data.tree))
       .catch(console.error);
+    void load();
+    window.addEventListener('wikiPagesUpdated', load);
+    return () => window.removeEventListener('wikiPagesUpdated', load);
   }, [activeProjectId]);
 
   const toggleDir = useCallback((path: string) => {

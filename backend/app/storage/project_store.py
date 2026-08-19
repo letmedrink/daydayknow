@@ -62,6 +62,9 @@ class ProjectStore:
                        "methodology", "media"]:
             (wiki_dir / subdir).mkdir(parents=True, exist_ok=True)
         (project_dir / "conversations").mkdir(parents=True, exist_ok=True)
+        metadata_path = project_dir / ".llmwiki-project.json"
+        if not metadata_path.exists():
+            metadata_path.write_text(json.dumps({"schemaVersion": 1}, indent=2), encoding="utf-8")
 
         with self._lock:
             index = self._read_index()

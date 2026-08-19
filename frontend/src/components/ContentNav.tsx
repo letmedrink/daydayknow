@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { path: '/ingest', label: '摄入', icon: '📄' },
   { path: '/reviews', label: '审阅', icon: '📋' },
   { path: '/research', label: '研究', icon: '🔍' },
+  { path: '/tasks', label: '任务', icon: '☷' },
   { path: '/graph', label: '图谱', icon: '◈' },
   { path: '/settings', label: '设置', icon: '⚙' },
 ];

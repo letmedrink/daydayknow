@@ -8,9 +8,12 @@ llmwiki 是一个面向可信本机单用户的 AI 知识库：通过文档摄�
 - 在写入前预览、接受或拒绝 AI 生成的页面，支持取消、重试和强制重新摄入
 - 基于项目 Wiki 进行带引用的流式对话
 - 浏览、搜索和直接编辑 Markdown 页面，查看页面历史与知识图谱
+- 创建、重命名、合并和恢复 Wiki 页面，重命名或合并时自动修复 Wikilink
 - 使用 Tavily 或 SerpApi 执行 Deep Research，并在接受后写入 Wiki
 - 支持 OpenAI-compatible 与 Anthropic Messages 协议
 - 所有业务数据保存在本地 JSON、Markdown 和 YAML frontmatter 文件中
+- 统一任务中心用于找回、审核、重试和清理摄入/研究任务
+- 完整项目可导出和导入带版本清单的 ZIP
 
 ## 技术栈
 
@@ -111,7 +114,7 @@ npm run dev
 
 ### 文档摄入
 
-摄入任务先解析原文和图片，再由 LLM 按项目已有页面与生成规则产出暂存 Wiki。前端展示预览后，只有“接受”才会原子写入正式 Wiki；“拒绝”会丢弃暂存结果。相同原文默认命中带 pipeline 版本的缓存，确认重新导入时会发送 `force=true` 绕过缓存。
+摄入任务先解析原文和图片，再由 LLM 按项目已有页面与生成规则产出暂存 Wiki。前端展示预览后，可以逐页选择、编辑 Markdown、决定合并或覆盖，也可以填写反馈重新生成；只有“接受”才会原子写入正式 Wiki，“拒绝”会丢弃暂存结果。相同原文默认命中带 pipeline 版本的缓存，确认重新导入时会发送 `force=true` 绕过缓存。
 
 最终质量主要取决于模型的长文本理解和结构化输出能力、摄入提示词、源文档质量，以及项目中已有 Wiki 的结构。建议先用小文档验证模型配置和页面规则，再处理大文档。
 
@@ -119,12 +122,13 @@ npm run dev
 
 聊天、摄入和研究通过 SSE 返回进度。聊天的 `done` 事件表示完整回复已经持久化；上游断流、空响应、客户端取消或写盘失败不会留下空对话。
 
-Deep Research 需要配置 Tavily 或 SerpApi。未配置、全部搜索失败或没有结果时任务会终止，不会让 LLM 在无来源情况下生成 Wiki。研究结果同样需要预览并接受后才写入。
+Deep Research 需要配置 Tavily 或 SerpApi。它会去重搜索结果、抓取公开网页正文并用 `[S1]` 形式绑定结论与来源；私网和本机地址不会被抓取。未配置、全部搜索失败或没有结果时任务会终止，不会让 LLM 在无来源情况下生成 Wiki。研究结果同样需要预览并接受后才写入。
 
 ## API 概览
 
 - 全局：`/api/projects`、`/api/settings`、`/api/profile`
 - 项目：`/api/projects/{project_id}/chat|conversations|wiki|ingest|reviews|research`
+- 项目导入导出：`POST /api/projects/import`、`GET /api/projects/{project_id}/export`
 - 健康检查：`/health`
 
 成功响应和错误响应采用统一结构；错误格式为 `{ "success": false, "error": "...", "code": "..." }`。SSE 事件包括 `reasoning`、`chunk`、`references`、`options`、`done` 和 `error`。
@@ -148,6 +152,8 @@ data/
 
 Markdown/JSON 是唯一事实来源，内存索引和图谱缓存均可重建。项目的普通删除只从项目列表移除并保留磁盘数据；应用创建的托管项目可在输入项目名确认后永久删除。绑定自定义外部目录的项目只能从列表移除。
 
+项目 ZIP 使用 `schemaVersion: 1`。导出包含 Wiki、对话、任务和历史；导入会创建新的托管项目，不覆盖现有项目。
+
 摄入测试语料位于 `examples/fixtures/`，不会复制进生产镜像。详细设计见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 ## 测试与检查
@@ -167,6 +173,8 @@ cd frontend
 npm test
 npm run typecheck
 npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
 部署配置：

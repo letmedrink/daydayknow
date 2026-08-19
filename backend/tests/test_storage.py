@@ -33,7 +33,35 @@ def test_wiki_store_writes_and_backs_up_pages(tmp_path):
     page = store.read_page("concepts/example.md")
     assert page["frontmatter"]["title"] == "Example"
     assert page["body"].strip() == "second"
-    assert list((tmp_path / "page-history").glob("*.md"))
+    assert list((tmp_path / "page-history/concepts/example.md").glob("*.md"))
+
+
+def test_wiki_history_restore_and_rename_updates_links(tmp_path):
+    store = WikiStore(tmp_path)
+    store.write_raw_page("concepts/old.md", "---\ntitle: Old\ntype: concept\n---\n\nfirst\n")
+    store.write_raw_page("concepts/old.md", "---\ntitle: Old\ntype: concept\n---\n\nsecond\n")
+    versions = store.list_page_history("concepts/old.md")
+    assert len(versions) == 1
+    store.restore_page_history("concepts/old.md", versions[0]["id"])
+    assert store.read_page("concepts/old.md")["body"].strip() == "first"
+
+    store.write_raw_page("concepts/ref.md", "See [[Old]] and [[old]].")
+    result = store.rename_page("concepts/old.md", "concepts/new.md")
+    assert result["path"] == "concepts/new.md"
+    assert store.read_page("concepts/old.md") is None
+    assert "[[new]]" in store.read_page("concepts/ref.md")["body"]
+
+
+def test_wiki_merge_pages_rewrites_links_and_preserves_content(tmp_path):
+    store = WikiStore(tmp_path)
+    store.write_page("concepts/target.md", {"title": "Target", "type": "concept"}, "target body")
+    store.write_page("concepts/source.md", {"title": "Source", "type": "concept"}, "source body")
+    store.write_raw_page("concepts/ref.md", "See [[Source]].")
+    result = store.merge_pages(["concepts/source.md"], "concepts/target.md")
+    assert result["merged"] == ["concepts/source.md"]
+    assert store.read_page("concepts/source.md") is None
+    assert "source body" in store.read_page("concepts/target.md")["body"]
+    assert "[[Target]]" in store.read_page("concepts/ref.md")["body"]
 
 
 def test_wiki_store_rejects_paths_outside_wiki(tmp_path):
@@ -42,6 +70,16 @@ def test_wiki_store_rejects_paths_outside_wiki(tmp_path):
     outside.write_text("secret", encoding="utf-8")
     assert store.read_page("../outside.md") is None
     assert store.delete_page("../outside.md") is False
+
+
+def test_wiki_store_indexes_root_index_and_log_pages(tmp_path):
+    store = WikiStore(tmp_path)
+    store.write_raw_page("index.md", "---\ntitle: Knowledge Index\ntype: synthesis\n---\n\n# Index\n")
+    store.write_raw_page("log.md", "# Change Log\n")
+
+    assert store.read_page("index.md")["frontmatter"]["title"] == "Knowledge Index"
+    assert store.read_page("log.md")["body"].strip() == "# Change Log"
+    assert {page["path"] for page in store.list_pages()} == {"index.md", "log.md"}
 
 
 def test_concurrent_review_updates_are_not_lost(tmp_path):

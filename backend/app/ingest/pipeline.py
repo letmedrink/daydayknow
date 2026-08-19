@@ -222,6 +222,7 @@ async def run_ingest_pipeline(
     force: bool = False,
     auto_commit: bool = True,
     stage_dir: Path | None = None,
+    custom_instructions: str = "",
 ) -> dict:
     """执行完整的摄入流程。
 
@@ -280,16 +281,17 @@ async def run_ingest_pipeline(
 
     # Step 5: LLM 分析
     await report("analyze", 0.25, "LLM 分析文档内容...")
+    instruction_block = f"\n\n用户补充要求：\n{custom_instructions.strip()}" if custom_instructions.strip() else ""
     analysis = await call_llm(
         global_store,
         "你是一位专业的知识分析专家。用中文输出分析结果。",
-        f"请分析以下文档：\n\n{source_content[:80000]}",
+        f"请分析以下文档：\n\n{source_content[:80000]}{instruction_block}",
     )
     await report("analyze", 0.4, "分析完成，准备生成 wiki 页面...")
 
     # Step 6: LLM 生成
     await report("generate", 0.45, "LLM 生成 wiki 页面...")
-    generation_prompt = build_generation_prompt(index, filename, source_content[:80000])
+    generation_prompt = build_generation_prompt(index, filename, source_content[:80000]) + instruction_block
     generation = await call_llm(
         global_store,
         generation_prompt,
@@ -361,6 +363,7 @@ async def run_ingest_pipeline(
             "existing_wiki_pages": len(pages),
             "images_processed": len(images),
             "pipeline_version": PIPELINE_VERSION,
+            "custom_instructions": custom_instructions.strip(),
         },
     }
 

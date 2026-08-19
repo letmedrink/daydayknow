@@ -1,6 +1,6 @@
 import type {
   AppSettings, Conversation, ConversationDetail, GraphInsights, LLMProvider,
-  ReviewItem, SearchResult, SSECallbacks, UserProfile, WikiGraph, WikiPage,
+  ReviewItem, SearchResult, SSECallbacks, UserProfile, WikiGraph, WikiPage, WikiPageContent, WikiPageVersion,
 } from '../types';
 
 const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
@@ -74,6 +74,19 @@ export async function deleteProjectData(id: string, confirmation: string): Promi
   });
 }
 
+export async function exportProject(id: string, name: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(id)}/export`);
+  if (!response.ok) throw new Error(`导出失败: ${response.status}`);
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a'); link.href = url; link.download = `${name}.zip`; link.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function importProject(file: File, name?: string): Promise<any> {
+  const form = new FormData(); form.append('archive', file); if (name) form.append('name', name);
+  return jsonRequest<any>(`${API_BASE}/api/projects/import`, { method: 'POST', body: form });
+}
+
 export async function sendChatMessage(
   message: string,
   conversationId: string | null,
@@ -108,7 +121,18 @@ export async function deleteConversation(id: string, projectId?: string): Promis
 }
 
 export const fetchWikiPages = (projectId?: string) => jsonRequest<{ tree: WikiPage[]; pages: WikiPage[] }>(`${projectBase(projectId)}/wiki/pages`);
-export const fetchWikiPage = (path: string, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/wiki/page?path=${encodeURIComponent(path)}`);
+export const fetchWikiPage = (path: string, projectId?: string) => jsonRequest<WikiPageContent>(`${projectBase(projectId)}/wiki/page?path=${encodeURIComponent(path)}`);
+export const saveWikiPage = (path: string, content: string, projectId?: string) => jsonRequest<WikiPageContent>(`${projectBase(projectId)}/wiki/page`, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, content }),
+});
+export const renameWikiPage = (oldPath: string, newPath: string, projectId?: string, updateLinks = true) => jsonRequest<{ path: string; updated_links: string[] }>(`${projectBase(projectId)}/wiki/page/rename`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ old_path: oldPath, new_path: newPath, update_links: updateLinks }),
+});
+export const fetchWikiPageHistory = (path: string, projectId?: string) => jsonRequest<WikiPageVersion[]>(`${projectBase(projectId)}/wiki/page/history?path=${encodeURIComponent(path)}`);
+export const fetchWikiPageVersion = (path: string, versionId: string, projectId?: string) => jsonRequest<WikiPageContent & { id: string; createdAt: number }>(`${projectBase(projectId)}/wiki/page/history/version?path=${encodeURIComponent(path)}&version_id=${encodeURIComponent(versionId)}`);
+export const restoreWikiPageVersion = (path: string, versionId: string, projectId?: string) => jsonRequest<WikiPageContent>(`${projectBase(projectId)}/wiki/page/history/restore`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, version_id: versionId }),
+});
 export async function deleteWikiPage(path: string, projectId?: string): Promise<void> {
   await jsonRequest(`${projectBase(projectId)}/wiki/page?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
 }
@@ -144,16 +168,45 @@ export async function deepResearch(topic: string, keywords?: string[], onProgres
 export const fetchResearchJobs = (projectId?: string) => jsonRequest<any[]>(`${projectBase(projectId)}/research/jobs`);
 export const acceptResearchJob = (jobId: string, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/research/jobs/${encodeURIComponent(jobId)}/accept`, { method: 'POST' });
 export const rejectResearchJob = (jobId: string, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/research/jobs/${encodeURIComponent(jobId)}/reject`, { method: 'POST' });
+export const deleteResearchJob = (jobId: string, projectId?: string) => jsonRequest<void>(`${projectBase(projectId)}/research/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+export async function retryResearchJob(jobId: string, onProgress: (event: any) => void, projectId?: string): Promise<any> {
+  let result: any = null;
+  await consumeSSE(await fetch(`${projectBase(projectId)}/research/jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' }), (event) => {
+    if (event.type === 'progress') onProgress(event); else if (event.type === 'done') result = { ...event.result, job: event.job };
+  });
+  return result;
+}
 
 export const fetchIngestJobs = (projectId?: string) => jsonRequest<any[]>(`${projectBase(projectId)}/ingest/jobs`);
-export const acceptIngestJob = (jobId: string, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/ingest/jobs/${encodeURIComponent(jobId)}/accept`, { method: 'POST' });
+export const acceptIngestJob = (jobId: string, projectId?: string, proposals?: Array<{ path: string; content: string; merge?: boolean }>) => jsonRequest<any>(`${projectBase(projectId)}/ingest/jobs/${encodeURIComponent(jobId)}/accept`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proposals }),
+});
 export const rejectIngestJob = (jobId: string, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/ingest/jobs/${encodeURIComponent(jobId)}/reject`, { method: 'POST' });
 export const cancelIngestJob = (jobId: string, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/ingest/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+export const deleteIngestJob = (jobId: string, projectId?: string) => jsonRequest<void>(`${projectBase(projectId)}/ingest/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+export async function retryIngestJob(jobId: string, onProgress: (event: any) => void, projectId?: string): Promise<any> {
+  let result: any = null;
+  await consumeSSE(await fetch(`${projectBase(projectId)}/ingest/jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' }), (event) => {
+    if (event.type === 'progress') onProgress(event); else if (event.type === 'done') result = { ...event.result, job: event.job };
+  });
+  return result;
+}
+export async function regenerateIngestJob(jobId: string, feedback: string, onProgress: (event: any) => void, projectId?: string, signal?: AbortSignal): Promise<any> {
+  let result: any = null;
+  const response = await fetch(`${projectBase(projectId)}/ingest/jobs/${encodeURIComponent(jobId)}/regenerate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }), signal,
+  });
+  await consumeSSE(response, (event) => {
+    if (event.type === 'progress') onProgress(event);
+    else if (event.type === 'done') result = { ...event.result, job: event.job };
+  });
+  return result;
+}
 
 export const fetchReviews = (projectId?: string) => jsonRequest<ReviewItem[]>(`${projectBase(projectId)}/reviews`);
-export async function resolveReview(id: string, action: string, projectId?: string): Promise<void> {
+export async function resolveReview(id: string, action: string, projectId?: string, details: Record<string, any> = {}): Promise<void> {
   await jsonRequest(`${projectBase(projectId)}/reviews/${encodeURIComponent(id)}/resolve`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ...details }),
   });
 }
 

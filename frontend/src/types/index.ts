@@ -44,6 +44,20 @@ export interface WikiPage {
   children?: WikiPage[];
 }
 
+export interface WikiPageContent {
+  frontmatter: Record<string, any> | null;
+  body: string;
+  rawBlock: string;
+  fullPath: string;
+  relPath?: string;
+}
+
+export interface WikiPageVersion {
+  id: string;
+  createdAt: number;
+  size: number;
+}
+
 export interface WikiGraphNode {
   id: string;
   title: string;

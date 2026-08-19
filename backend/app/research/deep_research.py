@@ -11,7 +11,12 @@
 LLM 调用次数：3 次（生成关键词 + 综合结果 + 生成页面）
 """
 
+import asyncio
+from html.parser import HTMLParser
+import ipaddress
+import socket
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from ..config import settings
 from ..storage import FileStore, WikiStore
@@ -60,6 +65,7 @@ async def run_deep_research(
     search_results = await _web_search(search_queries, global_store)
     if not search_results:
         raise RuntimeError("未获取到可用搜索结果，已停止研究，不会生成 Wiki")
+    search_results = await _enrich_search_results(search_results)
     await report("search", 0.3, f"找到 {len(search_results)} 条结果")
 
     # Step 3: 综合搜索结果
@@ -73,7 +79,7 @@ async def run_deep_research(
 
     generation_prompt = build_generation_prompt(
         index, f"research-{slugify(topic)}.md", synthesis,
-    )
+    ) + "\n\n研究内容中的 [S1]、[S2] 等来源编号必须保留在对应结论后，并在页面末尾列出引用来源。"
     generation = await call_llm(
         global_store,
         generation_prompt,
@@ -155,7 +161,108 @@ async def _web_search(queries: list[str], global_store: FileStore) -> list[dict]
     else:
         raise RuntimeError(f"不支持的搜索提供商: {provider}")
 
-    return results[:20]  # 最多 20 条结果
+    return _deduplicate_results(results)[:20]
+
+
+TRACKING_PARAMS = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"}
+
+
+def _canonical_url(raw_url: str) -> str:
+    if not raw_url:
+        return ""
+    parsed = urlsplit(raw_url.strip())
+    query = urlencode([(key, value) for key, value in parse_qsl(parsed.query) if key.lower() not in TRACKING_PARAMS])
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/") or "/", query, ""))
+
+
+def _deduplicate_results(results: list[dict]) -> list[dict]:
+    seen = set()
+    unique = []
+    for result in results:
+        canonical = _canonical_url(str(result.get("url") or ""))
+        key = canonical or (str(result.get("title") or "").strip().lower(), str(result.get("snippet") or "")[:160])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append({**result, "url": canonical or result.get("url", "")})
+    return unique
+
+
+class _ReadableHTML(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hidden = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, _attrs):
+        if tag in {"script", "style", "noscript", "svg"}:
+            self.hidden += 1
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript", "svg"} and self.hidden:
+            self.hidden -= 1
+
+    def handle_data(self, data):
+        if not self.hidden and data.strip():
+            self.parts.append(data.strip())
+
+
+async def _public_http_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    try:
+        addresses = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+    except OSError:
+        return False
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+async def _fetch_source_text(url: str) -> str:
+    import httpx
+    current = url
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False, headers={"User-Agent": "llmwiki/3 research"}) as client:
+        for _ in range(4):
+            if not await _public_http_url(current):
+                return ""
+            response = await client.get(current)
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location")
+                if not location:
+                    return ""
+                current = urljoin(current, location)
+                continue
+            if response.status_code != 200:
+                return ""
+            content_type = response.headers.get("content-type", "").lower()
+            if "text/html" not in content_type and "text/plain" not in content_type:
+                return ""
+            text = response.text[:500_000]
+            if "text/html" in content_type:
+                parser = _ReadableHTML()
+                parser.feed(text)
+                text = "\n".join(parser.parts)
+            return "\n".join(line.strip() for line in text.splitlines() if line.strip())[:12_000]
+    return ""
+
+
+async def _enrich_search_results(results: list[dict]) -> list[dict]:
+    unique = _deduplicate_results(results)
+
+    async def enrich(index: int, result: dict) -> dict:
+        content = ""
+        if index < 10 and result.get("url"):
+            try:
+                content = await _fetch_source_text(result["url"])
+            except Exception as exc:
+                log.warning("来源正文抓取失败 (%s): %s", result.get("url"), exc)
+        return {**result, "citation_id": f"S{index + 1}", "content": content}
+
+    return list(await asyncio.gather(*(enrich(index, result) for index, result in enumerate(unique))))
 
 
 async def _search_tavily(queries: list[str], api_key: str) -> list[dict]:
@@ -227,14 +334,14 @@ async def _search_serpapi(queries: list[str], api_key: str) -> list[dict]:
 async def _synthesize_results(topic: str, search_results: list[dict], file_store: FileStore) -> str:
     """LLM 综合搜索结果。"""
     results_text = "\n\n".join(
-        f"### {r['title']}\n来源: {r['url']}\n{r['snippet']}"
-        for r in search_results
+        f"### [{r.get('citation_id', f'S{index + 1}')}] {r['title']}\n来源: {r['url']}\n{r.get('content') or r['snippet']}"
+        for index, r in enumerate(search_results)
     )
 
     response = await call_llm(
         file_store,
-        "你是知识综合专家。将搜索结果整合为结构化的研究摘要。用中文输出。",
-        f"研究主题：{topic}\n\n搜索结果：\n\n{results_text}\n\n请综合以上结果，输出一份全面、结构化的研究摘要。包含关键发现、数据点、不同观点和结论。",
+        "你是知识综合专家。将搜索结果整合为结构化的研究摘要。用中文输出；每个可核验结论必须紧跟来源编号，例如 [S1]，不得编造不存在的编号。",
+        f"研究主题：{topic}\n\n搜索结果：\n\n{results_text}\n\n请综合以上结果，输出全面、结构化的研究摘要，包含关键发现、数据点、不同观点、结论和引用来源列表。",
     )
 
     return response

@@ -45,6 +45,41 @@ export function ReviewPanel() {
     navigate(`/research?${params.toString()}`);
   };
 
+  const createMissingPage = async (item: ReviewItem) => {
+    const title = item.title.replace(/^缺失[:：]?\s*/, '') || '待补充页面';
+    const path = window.prompt('新页面路径：', `concepts/${title.replace(/[\\/:*?"<>|]/g, '-')}.md`)?.trim();
+    if (!path) return;
+    const content = `---\ntitle: ${title}\ntype: concept\ntags: []\n---\n\n# ${title}\n\n${item.description || ''}\n`;
+    try {
+      await resolveReview(item.id, 'create_page', activeProjectId, { path, content });
+      setReviews((prev) => prev.filter((review) => review.id !== item.id));
+      window.dispatchEvent(new Event('wikiPagesUpdated'));
+      openPreview(path);
+      navigate('/wiki');
+    } catch (e) { console.error(e); }
+  };
+
+  const mergeDuplicate = async (item: ReviewItem) => {
+    const paths = item.affectedPages.map((path) => path.replace(/^wiki\//, ''));
+    if (paths.length < 2) return;
+    const target = window.prompt('保留哪个页面作为目标？', paths[0])?.trim();
+    if (!target || !paths.includes(target)) return;
+    const sources = paths.filter((path) => path !== target);
+    if (!window.confirm(`把 ${sources.join('、')} 合并到 ${target}，并修复相关链接？`)) return;
+    try {
+      await resolveReview(item.id, 'merge_pages', activeProjectId, { target_path: target, source_paths: sources });
+      setReviews((prev) => prev.filter((review) => review.id !== item.id));
+      window.dispatchEvent(new Event('wikiPagesUpdated'));
+      openPreview(target);
+      navigate('/wiki');
+    } catch (e) { console.error(e); }
+  };
+
+  const openAffectedPage = (item: ReviewItem) => {
+    const path = item.affectedPages[0]?.replace(/^wiki\//, '');
+    if (path) { openPreview(path); navigate('/wiki'); }
+  };
+
   const handleResolve = async (id: string, action: string) => {
     try {
       await resolveReview(id, action, activeProjectId);
@@ -87,15 +122,11 @@ export function ReviewPanel() {
                 </div>
               )}
               <div style={styles.actions}>
-                {item.options.map((opt, i) => (
-                  <button
-                    key={i}
-                    style={styles.actionBtn}
-                    onClick={() => startReviewWork(item, opt.action)}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
+                {item.type === 'missing-page' && <button style={styles.actionBtn} onClick={() => createMissingPage(item)}>创建页面</button>}
+                {item.type === 'duplicate' && item.affectedPages.length >= 2 && <button style={styles.actionBtn} onClick={() => mergeDuplicate(item)}>合并页面</button>}
+                {(item.type === 'contradiction' || item.type === 'suggestion') && item.affectedPages.length > 0 && <button style={styles.actionBtn} onClick={() => openAffectedPage(item)}>打开页面处理</button>}
+                <button style={styles.actionBtn} onClick={() => handleResolve(item.id, 'resolved_manually')}>标记已处理</button>
+                <button style={styles.actionBtn} onClick={() => handleResolve(item.id, 'skip')}>跳过</button>
                 {item.searchQueries && item.searchQueries.length > 0 && (
                   <button
                     style={{ ...styles.actionBtn, ...styles.researchBtn }}

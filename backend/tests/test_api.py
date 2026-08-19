@@ -5,6 +5,9 @@ from app.main import app
 from app.agents import chat_agent
 from app.ingest import pipeline
 from app.api import research as research_api
+import io
+import json
+import zipfile
 
 
 def test_global_and_project_routes(tmp_path):
@@ -34,6 +37,33 @@ def test_missing_project_uses_error_envelope(tmp_path):
             assert response.status_code == 404
             assert response.json()["success"] is False
             assert response.json()["code"] == "http_error"
+    finally:
+        settings.DATA_DIR = original_data_dir
+
+
+def test_wiki_page_edit_history_rename_and_restore_api(tmp_path):
+    original_data_dir = settings.DATA_DIR
+    settings.DATA_DIR = str(tmp_path)
+    try:
+        with TestClient(app) as client:
+            project_id = client.post("/api/projects", json={"name": "wiki-edit"}).json()["data"]["id"]
+            base = f"/api/projects/{project_id}/wiki/page"
+            first = "---\ntitle: First\ntype: concept\n---\n\nfirst body\n"
+            second = "---\ntitle: First\ntype: concept\n---\n\nsecond body\n"
+            assert client.put(base, json={"path": "concepts/first.md", "content": first}).status_code == 200
+            assert client.put(base, json={"path": "concepts/first.md", "content": second}).status_code == 200
+            versions = client.get(f"{base}/history", params={"path": "concepts/first.md"}).json()["data"]
+            assert len(versions) == 1
+            renamed = client.post(f"{base}/rename", json={
+                "old_path": "concepts/first.md", "new_path": "concepts/renamed.md", "update_links": True,
+            })
+            assert renamed.status_code == 200
+            restored = client.post(f"{base}/history/restore", json={
+                "path": "concepts/first.md", "version_id": versions[0]["id"],
+            })
+            assert restored.status_code == 200
+            assert restored.json()["data"]["body"].strip() == "first body"
+            assert client.put(base, json={"path": "../bad.md", "content": "bad"}).status_code == 400
     finally:
         settings.DATA_DIR = original_data_dir
 
@@ -81,6 +111,32 @@ def test_project_remove_and_permanent_delete_semantics(tmp_path):
             assert client.request("DELETE", f"/api/projects/{external['id']}/data", json={"confirmation": "external"}).status_code == 403
             assert client.delete(f"/api/projects/{external['id']}").status_code == 200
             assert external_path.exists()
+    finally:
+        settings.DATA_DIR = original_data_dir
+
+
+def test_project_export_and_import_round_trip(tmp_path):
+    original_data_dir = settings.DATA_DIR
+    settings.DATA_DIR = str(tmp_path)
+    try:
+        with TestClient(app) as client:
+            project = client.post("/api/projects", json={"name": "portable"}).json()["data"]
+            page = f"/api/projects/{project['id']}/wiki/page"
+            client.put(page, json={"path": "concepts/portable.md", "content": "portable content"})
+            exported = client.get(f"/api/projects/{project['id']}/export")
+            assert exported.status_code == 200
+            imported = client.post("/api/projects/import", files={"archive": ("project.zip", exported.content, "application/zip")})
+            assert imported.status_code == 200
+            imported_id = imported.json()["data"]["id"]
+            restored = client.get(f"/api/projects/{imported_id}/wiki/page", params={"path": "concepts/portable.md"})
+            assert restored.json()["data"]["body"] == "portable content"
+
+            malicious = io.BytesIO()
+            with zipfile.ZipFile(malicious, "w") as package:
+                package.writestr("llmwiki-project.json", json.dumps({"schemaVersion": 1, "name": "bad"}))
+                package.writestr("project/../../escape.txt", "bad")
+            rejected = client.post("/api/projects/import", files={"archive": ("bad.zip", malicious.getvalue(), "application/zip")})
+            assert rejected.status_code == 400
     finally:
         settings.DATA_DIR = original_data_dir
 
@@ -142,6 +198,35 @@ def test_ingest_requires_acceptance_and_can_be_rejected(tmp_path, monkeypatch):
             accepted = client.post(f"{base}/jobs/{job['id']}/accept")
             assert accepted.status_code == 200
             assert (tmp_path / "projects" / project["id"] / "wiki/concepts/accepted.md").exists()
+    finally:
+        settings.DATA_DIR = original_data_dir
+
+
+def test_ingest_accepts_edited_subset(tmp_path, monkeypatch):
+    original_data_dir = settings.DATA_DIR
+    settings.DATA_DIR = str(tmp_path)
+    responses = iter([
+        "analysis",
+        "---FILE: wiki/concepts/one.md---\none\n---END FILE---\n---FILE: wiki/concepts/two.md---\ntwo\n---END FILE---",
+    ])
+
+    async def fake_call(*_args, **_kwargs):
+        return next(responses)
+
+    monkeypatch.setattr(pipeline, "call_llm", fake_call)
+    try:
+        with TestClient(app) as client:
+            project = client.post("/api/projects", json={"name": "selective"}).json()["data"]
+            base = f"/api/projects/{project['id']}/ingest"
+            response = client.post(base, files={"file": ("source.txt", b"source", "text/plain")})
+            event = [line for line in response.text.splitlines() if line.startswith("data:")][-1]
+            job = __import__("json").loads(event[5:])["job"]
+            accepted = client.post(f"{base}/jobs/{job['id']}/accept", json={
+                "proposals": [{"path": "concepts/two.md", "content": "edited two", "merge": False}],
+            })
+            assert accepted.status_code == 200
+            assert not (tmp_path / "projects" / project["id"] / "wiki/concepts/one.md").exists()
+            assert (tmp_path / "projects" / project["id"] / "wiki/concepts/two.md").read_text() == "edited two"
     finally:
         settings.DATA_DIR = original_data_dir
 

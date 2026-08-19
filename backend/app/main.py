@@ -106,15 +106,19 @@ async def root():
 
 
 @app.get("/health")
-async def health_check():
+async def health_check(request: Request):
+    stored = request.app.state.global_store.get_settings()
+    active_id = stored.get("activeProviderId")
+    active_provider = stored.get("llmProviders", {}).get(active_id, {}) if active_id else {}
+    search_config = stored.get("searchApiConfig", {})
     return {
         "success": True,
         "data": {
             "status": "healthy",
             "checks": {
                 "data_dir": "writable" if os.access(settings.DATA_DIR, os.R_OK | os.W_OK) else "unavailable",
-                "llm": "configured" if settings.LLM_API_KEY else "not_configured",
-                "search_api": settings.SEARCH_API_PROVIDER or "not_configured",
+                "llm": "configured" if active_provider.get("api_key") or settings.LLM_API_KEY else "not_configured",
+                "search_api": search_config.get("provider") or settings.SEARCH_API_PROVIDER or "not_configured",
             },
         },
     }

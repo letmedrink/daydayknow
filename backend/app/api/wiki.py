@@ -2,9 +2,26 @@
 import mimetypes
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from ..dependencies import get_project_dir, get_project_wiki_store
 
 router = APIRouter(prefix="/api/projects/{project_id}/wiki")
+
+
+class SavePageRequest(BaseModel):
+    path: str
+    content: str
+
+
+class RenamePageRequest(BaseModel):
+    old_path: str
+    new_path: str
+    update_links: bool = True
+
+
+class RestorePageRequest(BaseModel):
+    path: str
+    version_id: str
 
 
 @router.get("/pages")
@@ -21,6 +38,62 @@ async def get_page(path: str = Query(...), wiki_store=Depends(get_project_wiki_s
     page = wiki_store.read_page(path)
     if not page:
         raise HTTPException(status_code=404, detail="页面不存在")
+    return {"success": True, "data": page}
+
+
+@router.put("/page")
+async def save_page(req: SavePageRequest, wiki_store=Depends(get_project_wiki_store)):
+    """Create or replace a Markdown page, preserving the previous version."""
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="页面内容不能为空")
+    try:
+        path = wiki_store.write_raw_page(req.path, req.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "data": wiki_store.read_page(path)}
+
+
+@router.post("/page/rename")
+async def rename_page(req: RenamePageRequest, wiki_store=Depends(get_project_wiki_store)):
+    try:
+        result = wiki_store.rename_page(req.old_path, req.new_path, req.update_links)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "data": result}
+
+
+@router.get("/page/history")
+async def list_page_history(path: str = Query(...), wiki_store=Depends(get_project_wiki_store)):
+    try:
+        versions = wiki_store.list_page_history(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "data": versions}
+
+
+@router.get("/page/history/version")
+async def get_page_history(path: str = Query(...), version_id: str = Query(...), wiki_store=Depends(get_project_wiki_store)):
+    try:
+        version = wiki_store.read_page_history(path, version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not version:
+        raise HTTPException(status_code=404, detail="历史版本不存在")
+    return {"success": True, "data": version}
+
+
+@router.post("/page/history/restore")
+async def restore_page_history(req: RestorePageRequest, wiki_store=Depends(get_project_wiki_store)):
+    try:
+        page = wiki_store.restore_page_history(req.path, req.version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"success": True, "data": page}
 
 

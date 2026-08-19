@@ -5,26 +5,8 @@ import { usePreview } from '../contexts/PreviewContext';
 import { useProject } from '../contexts/ProjectContext';
 import { theme } from '../lib/theme';
 import { fetchWikiPage, fetchWikiPages } from '../lib/api';
+import { wikilinksToMarkdown, wikilinkTarget } from '../lib/wikiMarkdown';
 import type { WikiPage } from '../types';
-
-/** 按 [[wikilink]] 拆分文本，返回 text/link 段 */
-function splitWikilinks(text: string): Array<{ type: 'text' | 'link'; content: string }> {
-  const parts: Array<{ type: 'text' | 'link'; content: string }> = [];
-  const regex = /\[\[([^\]]+)\]\]/g;
-  let lastIndex = 0;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push({ type: 'text', content: text.slice(lastIndex, match.index) });
-    }
-    parts.push({ type: 'link', content: match[1] });
-    lastIndex = regex.lastIndex;
-  }
-  if (lastIndex < text.length) {
-    parts.push({ type: 'text', content: text.slice(lastIndex) });
-  }
-  return parts;
-}
 
 /** 解析 wikilink 目标，支持标题/名称/路径模糊匹配 */
 function resolveWikiTarget(target: string, pages: WikiPage[]): string {
@@ -140,7 +122,7 @@ export function PreviewPanel() {
   }
 
   const typeColor = fm ? (TYPE_COLORS[fm.type] || theme.text.secondary) : theme.text.secondary;
-  const segments = splitWikilinks(content);
+  const markdownContent = wikilinksToMarkdown(content);
 
   return (
     <div style={styles.container}>
@@ -266,32 +248,25 @@ export function PreviewPanel() {
           .preview-markdown blockquote { border-left: 3px solid ${theme.border.medium}; margin: 8px 0; padding: 4px 12px; color: ${theme.text.secondary}; }
         `}</style>
         <div style={styles.markdown} className="preview-markdown">
-          {segments.map((seg, i) =>
-            seg.type === 'text' ? (
-              <ReactMarkdown
-                key={i}
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  img: ({ src, alt, ...props }) => {
-                    // 相对路径 media/xxx → 当前项目的媒体 API
-                    let imgSrc = src || '';
-                    if (imgSrc.startsWith('media/') || imgSrc.startsWith('./media/')) {
-                      imgSrc = `/api/projects/${encodeURIComponent(activeProjectId)}/wiki/media/${imgSrc.replace(/^\.?\/?media\//, '')}`;
-                    }
-                    return <img src={imgSrc} alt={alt || ''} style={{ maxWidth: '100%', borderRadius: 6, margin: '8px 0' }} {...props} />;
-                  },
-                }}
-              >{seg.content}</ReactMarkdown>
-            ) : (
-              <span
-                key={i}
-                style={styles.wikilink}
-                onClick={() => handleClickLink(seg.content)}
-              >
-                {seg.content}
-              </span>
-            ),
-          )}
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              a: ({ href, children, ...props }) => {
+                const target = wikilinkTarget(href);
+                return target ? (
+                  <span style={styles.wikilink} onClick={() => handleClickLink(target)}>{children}</span>
+                ) : <a href={href} {...props}>{children}</a>;
+              },
+              img: ({ src, alt, ...props }) => {
+                // 相对路径 media/xxx → 当前项目的媒体 API
+                let imgSrc = src || '';
+                if (imgSrc.startsWith('media/') || imgSrc.startsWith('./media/')) {
+                  imgSrc = `/api/projects/${encodeURIComponent(activeProjectId)}/wiki/media/${imgSrc.replace(/^\.?\/?media\//, '')}`;
+                }
+                return <img src={imgSrc} alt={alt || ''} style={{ maxWidth: '100%', borderRadius: 6, margin: '8px 0' }} {...props} />;
+              },
+            }}
+          >{markdownContent}</ReactMarkdown>
         </div>
       </div>
     </div>

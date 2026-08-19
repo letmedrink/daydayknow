@@ -12,6 +12,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 backend/data/
+backend/data-e2e/
 
 # Local configuration (examples stay tracked)
 .env
@@ -27,5 +28,7 @@ backend/data/
 .vscode/
 .idea/
 *.log
+playwright-report/
+test-results/
 tmp/
 temp/

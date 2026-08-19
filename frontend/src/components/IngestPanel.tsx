@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { acceptIngestJob, ingestFile, fetchReviews, fetchWikiPages, rejectIngestJob } from '../lib/api';
+import { acceptIngestJob, ingestFile, fetchReviews, fetchWikiPages, regenerateIngestJob, rejectIngestJob } from '../lib/api';
 import { usePreview } from '../contexts/PreviewContext';
 import { useProject } from '../contexts/ProjectContext';
 import { refreshWikiPagesCache } from './ChatWindow';
@@ -26,6 +26,7 @@ export function IngestPanel() {
   const [result, setResult] = useState<any>(null);
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [feedback, setFeedback] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const navigate = useNavigate();
@@ -76,7 +77,7 @@ export function IngestPanel() {
         setStep(evt.step || '');
         setMessage(evt.message || '');
       }, activeProjectId, force, controller.signal);
-      setResult(res);
+      setResult({ ...res, proposals: res.proposals?.map((page: any) => ({ ...page, selected: true })) });
       setProgress(1);
       setStep('done');
       setMessage(res.status === 'awaiting_review' ? '生成完成，请审核后决定是否写入' : '已命中缓存');
@@ -104,7 +105,11 @@ export function IngestPanel() {
     if (!jobId) return;
     setLoading(true);
     try {
-      const job = await acceptIngestJob(jobId, activeProjectId);
+      const selected = (result.proposals || []).filter((page: any) => page.selected !== false).map((page: any) => ({
+        path: page.path, content: page.content, merge: page.merge !== false,
+      }));
+      if (selected.length === 0) throw new Error('请至少选择一个页面');
+      const job = await acceptIngestJob(jobId, activeProjectId, selected);
       setResult(job.result);
       setMessage('已接受并写入 Wiki');
       refreshWikiPagesCache(activeProjectId);
@@ -114,6 +119,29 @@ export function IngestPanel() {
     } catch (e: any) {
       setStep('error'); setMessage(e.message);
     } finally { setLoading(false); }
+  };
+
+  const regenerate = async () => {
+    const jobId = result?.job?.id;
+    if (!jobId || !feedback.trim()) return;
+    setLoading(true); setProgress(0); setStep(''); setMessage('按反馈重新生成...');
+    const controller = new AbortController(); abortRef.current = controller;
+    try {
+      const regenerated = await regenerateIngestJob(jobId, feedback, (evt) => {
+        setProgress(evt.progress || 0); setStep(evt.step || ''); setMessage(evt.message || '');
+      }, activeProjectId, controller.signal);
+      setResult({ ...regenerated, proposals: regenerated.proposals?.map((page: any) => ({ ...page, selected: true })) });
+      setFeedback(''); setProgress(1); setStep('done'); setMessage('已按反馈重新生成，请继续审核');
+    } catch (e: any) {
+      if (e.name !== 'AbortError') { setStep('error'); setMessage(e.message); }
+    } finally { abortRef.current = null; setLoading(false); }
+  };
+
+  const updateProposal = (index: number, fields: Record<string, any>) => {
+    setResult((current: any) => ({
+      ...current,
+      proposals: current.proposals.map((page: any, pageIndex: number) => pageIndex === index ? { ...page, ...fields } : page),
+    }));
   };
 
   const rejectResult = async () => {
@@ -191,7 +219,7 @@ export function IngestPanel() {
 
           {result.status === 'awaiting_review' && (
             <div style={styles.approvalBar}>
-              <span>以下内容尚未写入 Wiki，可先展开预览。</span>
+              <span>选择需要写入的页面，并可在接受前直接修改 Markdown。</span>
               <button style={styles.acceptBtn} onClick={acceptResult} disabled={loading}>接受摄入</button>
               <button style={styles.rejectBtn} onClick={rejectResult} disabled={loading}>拒绝</button>
             </div>
@@ -220,12 +248,20 @@ export function IngestPanel() {
           {result.proposals?.length > 0 && result.status === 'awaiting_review' && (
             <div style={styles.section}>
               <h4 style={styles.sectionTitle}>待审核页面</h4>
-              {result.proposals.map((page: any) => (
-                <details key={page.path} style={styles.proposal}>
-                  <summary>{page.title} · {page.path}{page.replaces_existing ? ' （将合并现有页）' : ''}</summary>
-                  <pre style={styles.previewText}>{page.content}</pre>
+              {result.proposals.map((page: any, index: number) => (
+                <details key={page.path} style={{ ...styles.proposal, opacity: page.selected === false ? 0.55 : 1 }}>
+                  <summary>
+                    <input type="checkbox" checked={page.selected !== false} onClick={(event) => event.stopPropagation()} onChange={(event) => updateProposal(index, { selected: event.target.checked })} />{' '}
+                    {page.title} · {page.path}{page.replaces_existing ? ' （将合并现有页）' : ''}
+                  </summary>
+                  <label style={styles.mergeLabel}><input type="checkbox" checked={page.merge !== false} onChange={(event) => updateProposal(index, { merge: event.target.checked })} /> 合并已有页面（关闭则覆盖）</label>
+                  <textarea style={styles.proposalEditor} value={page.content} onChange={(event) => updateProposal(index, { content: event.target.value })} disabled={page.selected === false} />
                 </details>
               ))}
+              <div style={styles.regenerateBox}>
+                <textarea style={styles.feedbackInput} value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="不满意？填写反馈，例如：减少页面数量、保留更多原文、重点整理人物关系" />
+                <button style={styles.actionBtn} onClick={regenerate} disabled={loading || !feedback.trim()}>按反馈重新生成</button>
+              </div>
             </div>
           )}
 
@@ -395,5 +431,10 @@ const styles: Record<string, React.CSSProperties> = {
   rejectBtn: { padding: '7px 12px', border: 'none', borderRadius: theme.radius.sm, backgroundColor: '#b84a45', color: '#fff', cursor: 'pointer' },
   proposal: { padding: '9px 12px', marginTop: 6, backgroundColor: theme.bg.raised, border: `1px solid ${theme.border.light}`, borderRadius: theme.radius.sm, fontSize: 13 },
   previewText: { whiteSpace: 'pre-wrap', maxHeight: 360, overflow: 'auto', padding: 10, backgroundColor: theme.bg.content, fontFamily: theme.fontMono, fontSize: 12 },
+  proposalEditor: { width: '100%', minHeight: 220, marginTop: 8, boxSizing: 'border-box', padding: 10, border: `1px solid ${theme.border.light}`, borderRadius: theme.radius.sm, backgroundColor: theme.bg.content, color: theme.text.primary, fontFamily: theme.fontMono, fontSize: 12, lineHeight: 1.5 },
+  mergeLabel: { display: 'block', marginTop: 9, color: theme.text.secondary, fontSize: 12 },
+  regenerateBox: { display: 'flex', gap: 8, marginTop: 12, alignItems: 'flex-end' },
+  feedbackInput: { flex: 1, minHeight: 64, padding: 9, border: `1px solid ${theme.border.light}`, borderRadius: theme.radius.sm, backgroundColor: theme.bg.content, color: theme.text.primary, resize: 'vertical' },
+  actionBtn: { padding: '8px 12px', border: `1px solid ${theme.border.medium}`, borderRadius: theme.radius.sm, backgroundColor: theme.bg.raised, color: theme.text.primary, cursor: 'pointer' },
   qualityInfo: { padding: '8px 10px', marginBottom: 12, borderRadius: theme.radius.sm, backgroundColor: theme.bg.raised, color: theme.text.secondary, fontSize: 12 },
 };

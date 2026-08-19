@@ -32,3 +32,27 @@ async def test_research_refuses_zero_results(tmp_path, monkeypatch):
             "topic", project_store, wiki_store, global_store, search_queries=["topic"],
         )
     assert wiki_store.list_pages() == []
+
+
+def test_research_deduplicates_tracking_urls_and_assigns_citations(monkeypatch):
+    results = [
+        {"title": "One", "url": "https://example.com/page?utm_source=x", "snippet": "a"},
+        {"title": "Duplicate", "url": "https://example.com/page", "snippet": "b"},
+        {"title": "Two", "url": "https://example.org/other", "snippet": "c"},
+    ]
+    unique = deep_research._deduplicate_results(results)
+    assert len(unique) == 2
+    assert unique[0]["url"] == "https://example.com/page"
+
+
+@pytest.mark.asyncio
+async def test_research_enrichment_keeps_snippet_when_fetch_fails(monkeypatch):
+    async def no_content(_url):
+        return ""
+    monkeypatch.setattr(deep_research, "_fetch_source_text", no_content)
+    enriched = await deep_research._enrich_search_results([
+        {"title": "One", "url": "https://example.com/", "snippet": "fallback"},
+    ])
+    assert enriched[0]["citation_id"] == "S1"
+    assert enriched[0]["content"] == ""
+    assert enriched[0]["snippet"] == "fallback"

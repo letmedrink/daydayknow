@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useProject } from '../contexts/ProjectContext';
 import { theme } from '../lib/theme';
+import { exportProject } from '../lib/api';
 
 export function ProjectHome({ onEnter }: { onEnter: () => void }) {
-  const { projects, setActiveProject, createProject, deleteProject, deleteProjectData } = useProject();
+  const { projects, setActiveProject, createProject, deleteProject, deleteProjectData, importProject } = useProject();
   const [newName, setNewName] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
@@ -69,6 +71,7 @@ export function ProjectHome({ onEnter }: { onEnter: () => void }) {
                       {p.managed && (
                         <button style={styles.deleteBtn} onClick={(e) => handlePermanentDelete(e, p.id, p.name)}>永久删除</button>
                       )}
+                      <button style={styles.removeBtn} onClick={(e) => { e.stopPropagation(); void exportProject(p.id, p.name); }}>导出</button>
                     </span>
                   </div>
                   <span style={styles.projectPath}>{p.path}</span>
@@ -100,6 +103,8 @@ export function ProjectHome({ onEnter }: { onEnter: () => void }) {
             + 新建项目
           </button>
         )}
+        <button style={{ ...styles.newBtn, marginTop: 8 }} onClick={() => importRef.current?.click()}>导入项目 ZIP</button>
+        <input ref={importRef} type="file" accept=".zip,application/zip" style={{ display: 'none' }} onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProject(file); event.currentTarget.value = ''; }} />
       </div>
     </div>
   );

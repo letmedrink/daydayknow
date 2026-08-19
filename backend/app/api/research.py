@@ -118,6 +118,17 @@ async def get_job(job_id: str, file_store: FileStore = Depends(get_project_file_
     return {"success": True, "data": job}
 
 
+@router.delete("/jobs/{job_id}")
+async def delete_job(job_id: str, file_store: FileStore = Depends(get_project_file_store)):
+    try:
+        deleted = file_store.delete_research_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="研究任务不存在")
+    return {"success": True}
+
+
 @router.post("/jobs/{job_id}/retry")
 async def retry_job(
     job_id: str, global_store: FileStore = Depends(get_global_store),

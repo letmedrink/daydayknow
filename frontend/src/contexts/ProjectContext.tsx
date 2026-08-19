@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import { fetchProjects, createProject, deleteProject, deleteProjectData } from '../lib/api';
+import { fetchProjects, createProject, deleteProject, deleteProjectData, importProject } from '../lib/api';
 
 export interface Project {
   id: string;
@@ -17,6 +17,7 @@ interface ProjectContextType {
   deleteProject: (id: string) => Promise<void>;
   deleteProjectData: (id: string, confirmation: string) => Promise<void>;
   refreshProjects: () => Promise<void>;
+  importProject: (file: File, name?: string) => Promise<void>;
 }
 
 const ProjectContext = createContext<ProjectContextType | null>(null);
@@ -59,6 +60,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     await refreshProjects();
   }, [activeProjectId, refreshProjects]);
 
+  const handleImport = useCallback(async (file: File, name?: string) => {
+    await importProject(file, name);
+    await refreshProjects();
+  }, [refreshProjects]);
+
   return (
     <ProjectContext.Provider value={{
       projects,
@@ -67,7 +73,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       createProject: handleCreate,
       deleteProject: handleDelete,
       deleteProjectData: handleDeleteData,
-      refreshProjects,
+      refreshProjects, importProject: handleImport,
     }}>
       {children}
     </ProjectContext.Provider>

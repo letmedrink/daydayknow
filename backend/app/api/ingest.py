@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from ..config import settings
 from ..dependencies import get_global_store, get_project_file_store, get_project_wiki_store
@@ -17,6 +18,20 @@ from ..storage import FileStore, WikiStore
 
 router = APIRouter(prefix="/api/projects/{project_id}/ingest")
 _RUNNING: dict[str, asyncio.Task] = {}
+
+
+class ProposalInput(BaseModel):
+    path: str
+    content: str
+    merge: bool = True
+
+
+class AcceptIngestRequest(BaseModel):
+    proposals: list[ProposalInput] | None = None
+
+
+class RegenerateIngestRequest(BaseModel):
+    feedback: str
 
 
 async def _read_upload(file: UploadFile) -> bytes:
@@ -66,6 +81,7 @@ def _start_job(
             result = await run_ingest_pipeline(
                 job["filename"], file_store.ingest_job_source(job_id), file_store, wiki_store, global_store,
                 progress_callback=on_progress, force=bool(job.get("force")), auto_commit=False, stage_dir=stage_dir,
+                custom_instructions=str(job.get("instructions") or ""),
             )
             if result.get("cached"):
                 status = "accepted"
@@ -139,6 +155,17 @@ async def get_job(job_id: str, file_store: FileStore = Depends(get_project_file_
     return {"success": True, "data": _public_job(job)}
 
 
+@router.delete("/jobs/{job_id}")
+async def delete_job(job_id: str, file_store: FileStore = Depends(get_project_file_store)):
+    try:
+        deleted = file_store.delete_ingest_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="摄入任务不存在")
+    return {"success": True}
+
+
 @router.post("/jobs/{job_id}/retry")
 async def retry_job(
     job_id: str, global_store: FileStore = Depends(get_global_store),
@@ -151,6 +178,33 @@ async def retry_job(
     if job.get("status") not in {"failed", "cancelled", "interrupted"}:
         raise HTTPException(status_code=409, detail="当前任务状态不可重试")
     task, queue = _start_job(job, file_store, wiki_store, global_store)
+    return _stream_job(task, queue, file_store, job_id)
+
+
+@router.post("/jobs/{job_id}/regenerate")
+async def regenerate_job(
+    job_id: str, req: RegenerateIngestRequest,
+    global_store: FileStore = Depends(get_global_store),
+    file_store: FileStore = Depends(get_project_file_store),
+    wiki_store: WikiStore = Depends(get_project_wiki_store),
+):
+    job = file_store.get_ingest_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="摄入任务不存在")
+    if job.get("status") not in {"awaiting_review", "failed", "cancelled", "interrupted"}:
+        raise HTTPException(status_code=409, detail="当前任务状态不可重新生成")
+    feedback = req.feedback.strip()
+    if not feedback:
+        raise HTTPException(status_code=400, detail="请填写重新生成要求")
+    try:
+        file_store.ingest_job_source(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="原始文件已清理，无法重新生成") from exc
+    updated = file_store.update_ingest_job(
+        job_id, status="pending", step="queued", progress=0, force=True,
+        instructions=feedback, result=None, message="按反馈重新生成",
+    )
+    task, queue = _start_job(updated or job, file_store, wiki_store, global_store)
     return _stream_job(task, queue, file_store, job_id)
 
 
@@ -204,7 +258,8 @@ def _restore_media(snapshots: list[tuple[Path, bytes | None]]):
 
 @router.post("/jobs/{job_id}/accept")
 async def accept_job(
-    job_id: str, file_store: FileStore = Depends(get_project_file_store),
+    job_id: str, req: AcceptIngestRequest | None = None,
+    file_store: FileStore = Depends(get_project_file_store),
     wiki_store: WikiStore = Depends(get_project_wiki_store),
 ):
     job = file_store.get_ingest_job(job_id)
@@ -213,7 +268,17 @@ async def accept_job(
     if job.get("status") != "awaiting_review":
         raise HTTPException(status_code=409, detail="任务不在待审核状态")
     result = job.get("result") or {}
-    proposals = result.get("proposals", [])
+    original_proposals = result.get("proposals", [])
+    proposals = original_proposals
+    if req and req.proposals is not None:
+        allowed = {page["path"]: page for page in original_proposals}
+        proposals = []
+        for submitted in req.proposals:
+            if submitted.path not in allowed:
+                raise HTTPException(status_code=400, detail=f"页面不属于该摄入任务: {submitted.path}")
+            proposals.append({**allowed[submitted.path], "content": submitted.content, "merge": submitted.merge})
+    if not proposals:
+        raise HTTPException(status_code=400, detail="至少选择一个页面写入")
     page_snapshots = wiki_store.snapshot_pages([page["path"] for page in proposals])
     old_reviews = file_store.read_json("reviews.json", [])
     old_cache = file_store.read_json("ingest-cache.json", {"entries": {}})
@@ -221,8 +286,10 @@ async def accept_job(
     try:
         committed = wiki_store.commit_pages(proposals)
         files_written = [f"wiki/{path}" for path in committed]
-        if result.get("reviews"):
-            file_store.add_reviews(result["reviews"])
+        selected_paths = {f"wiki/{page['path']}" for page in proposals} | {page["path"] for page in proposals}
+        selected_reviews = [review for review in result.get("reviews", []) if not review.get("affectedPages") or selected_paths.intersection(review.get("affectedPages", []))]
+        if selected_reviews:
+            file_store.add_reviews(selected_reviews)
         file_store.save_ingest_cache_hash(
             job["filename"], result["source_hash"], files_written,
             result.get("pipeline_version", PIPELINE_VERSION),
@@ -234,7 +301,7 @@ async def accept_job(
         _restore_media(media_snapshots)
         raise
     result = {
-        key: value for key, value in {**result, "files_written": files_written, "status": "accepted"}.items()
+        key: value for key, value in {**result, "files_written": files_written, "status": "accepted", "accepted_page_count": len(proposals)}.items()
         if key not in {"proposals", "source_hash", "media_files"}
     }
     job_dir = file_store.data_dir / "ingest-jobs" / job_id

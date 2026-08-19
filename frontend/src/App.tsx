@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { lazy, Suspense, useState, useCallback, useRef } from 'react';
 import { BrowserRouter, useLocation } from 'react-router-dom';
 import { useChat } from './hooks/useChat';
 import { useConversations } from './hooks/useConversations';
@@ -9,13 +9,15 @@ import { WikiTree } from './components/WikiTree';
 import { ContentNav } from './components/ContentNav';
 import { PreviewPanel } from './components/PreviewPanel';
 import { ChatWindow } from './components/ChatWindow';
-import { GraphPage } from './components/GraphPage';
-import { WikiBrowser } from './components/WikiBrowser';
-import { IngestPanel } from './components/IngestPanel';
-import { ReviewPanel } from './components/ReviewPanel';
-import { DeepResearchPanel } from './components/DeepResearchPanel';
-import { SettingsPanel } from './components/SettingsPanel';
 import { ProjectHome } from './components/ProjectHome';
+
+const GraphPage = lazy(() => import('./components/GraphPage').then((module) => ({ default: module.GraphPage })));
+const WikiBrowser = lazy(() => import('./components/WikiBrowser').then((module) => ({ default: module.WikiBrowser })));
+const IngestPanel = lazy(() => import('./components/IngestPanel').then((module) => ({ default: module.IngestPanel })));
+const ReviewPanel = lazy(() => import('./components/ReviewPanel').then((module) => ({ default: module.ReviewPanel })));
+const DeepResearchPanel = lazy(() => import('./components/DeepResearchPanel').then((module) => ({ default: module.DeepResearchPanel })));
+const SettingsPanel = lazy(() => import('./components/SettingsPanel').then((module) => ({ default: module.SettingsPanel })));
+const TaskCenter = lazy(() => import('./components/TaskCenter').then((module) => ({ default: module.TaskCenter })));
 
 /** 可拖拽的分隔条 */
 function Divider({ onDrag }: { onDrag: (delta: number) => void }) {
@@ -104,6 +106,7 @@ function ProjectWorkspace({ onBack }: { onBack: () => void }) {
     if (path === '/ingest') return <IngestPanel />;
     if (path === '/reviews') return <ReviewPanel />;
     if (path === '/research') return <DeepResearchPanel />;
+    if (path === '/tasks') return <TaskCenter />;
     if (path === '/settings') return <SettingsPanel />;
     return (
       <ChatWindow
@@ -135,7 +138,7 @@ function ProjectWorkspace({ onBack }: { onBack: () => void }) {
       <div style={styles.centerPanel}>
         <ContentNav />
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-          {renderContent()}
+          <Suspense fallback={<div style={styles.loading}>加载中...</div>}>{renderContent()}</Suspense>
         </div>
       </div>
 
@@ -206,4 +209,5 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'background-color 0.15s',
     position: 'relative' as const,
   },
+  loading: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.text.tertiary },
 };
