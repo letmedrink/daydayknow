@@ -11,7 +11,13 @@ export function projectBase(projectId?: string): string {
 }
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch {
+    const endpoint = API_BASE || '当前站点';
+    throw new Error(`无法连接后端服务（${endpoint}），请确认后端已启动`);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     throw new Error(payload.error || `Request failed: ${response.status}`);
@@ -103,7 +109,7 @@ export async function sendChatMessage(
     await consumeSSE(response, (event) => {
       if (event.type === 'chunk') callbacks.onChunk(event.content);
       else if (event.type === 'reasoning') callbacks.onReasoning?.(event.content);
-      else if (event.type === 'done') callbacks.onDone(event.conversation_id);
+      else if (event.type === 'done') callbacks.onDone(event.conversation_id, event.message_id);
       else if (event.type === 'options') callbacks.onOptions(event.options);
       else if (event.type === 'references') callbacks.onReferences(event.references);
     });
@@ -147,7 +153,7 @@ export async function ingestFile(file: File, onProgress: (event: any) => void, p
   form.append('force', String(force));
   let result: any = null;
   await consumeSSE(await fetch(`${projectBase(projectId)}/ingest`, { method: 'POST', body: form, signal }), (event) => {
-    if (event.type === 'progress') onProgress(event);
+    if (event.type === 'progress' || event.type === 'detail') onProgress(event);
     else if (event.type === 'done') result = { ...event.result, job: event.job };
   });
   return result;
@@ -187,7 +193,7 @@ export const deleteIngestJob = (jobId: string, projectId?: string) => jsonReques
 export async function retryIngestJob(jobId: string, onProgress: (event: any) => void, projectId?: string): Promise<any> {
   let result: any = null;
   await consumeSSE(await fetch(`${projectBase(projectId)}/ingest/jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' }), (event) => {
-    if (event.type === 'progress') onProgress(event); else if (event.type === 'done') result = { ...event.result, job: event.job };
+    if (event.type === 'progress' || event.type === 'detail') onProgress(event); else if (event.type === 'done') result = { ...event.result, job: event.job };
   });
   return result;
 }
@@ -197,7 +203,7 @@ export async function regenerateIngestJob(jobId: string, feedback: string, onPro
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }), signal,
   });
   await consumeSSE(response, (event) => {
-    if (event.type === 'progress') onProgress(event);
+    if (event.type === 'progress' || event.type === 'detail') onProgress(event);
     else if (event.type === 'done') result = { ...event.result, job: event.job };
   });
   return result;
@@ -224,3 +230,26 @@ export const fetchProfile = () => jsonRequest<UserProfile | null>(`${API_BASE}/a
 export const updateProfile = (profile: Partial<UserProfile>) => jsonRequest<UserProfile>(`${API_BASE}/api/profile`, {
   method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(profile),
 });
+
+export const fetchProjectSchema = (projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/schema`);
+export const updateProjectSchema = (schema: any, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/schema`, {
+  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(schema),
+});
+export const fetchSources = (projectId?: string) => jsonRequest<any[]>(`${projectBase(projectId)}/sources`);
+export const sourceOriginalUrl = (sourceId: string, projectId?: string) => `${projectBase(projectId)}/sources/${encodeURIComponent(sourceId)}/original`;
+export const fetchSourceExtraction = async (sourceId: string, projectId?: string): Promise<string> => {
+  const response = await fetch(`${projectBase(projectId)}/sources/${encodeURIComponent(sourceId)}/extraction`);
+  if (!response.ok) throw new Error(`读取解析文本失败: ${response.status}`);
+  return response.text();
+};
+export const createQueryChange = (conversationId: string, messageId: string, projectId?: string, instructions = '') => jsonRequest<any>(`${projectBase(projectId)}/changes/query`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation_id: conversationId, message_id: messageId, instructions }),
+});
+export const runWikiLint = (projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/lint`, { method: 'POST' });
+export const fetchChangeJobs = (projectId?: string) => jsonRequest<any[]>(`${projectBase(projectId)}/changes/jobs`);
+export const acceptChangeJob = (jobId: string, projectId?: string, proposals?: Array<{ path: string; content: string }>) => jsonRequest<any>(`${projectBase(projectId)}/changes/jobs/${encodeURIComponent(jobId)}/accept`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proposals }),
+});
+export const rejectChangeJob = (jobId: string, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/changes/jobs/${encodeURIComponent(jobId)}/reject`, { method: 'POST' });
+export const retryChangeJob = (jobId: string, projectId?: string) => jsonRequest<any>(`${projectBase(projectId)}/changes/jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' });
+export const deleteChangeJob = (jobId: string, projectId?: string) => jsonRequest<void>(`${projectBase(projectId)}/changes/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });

@@ -4,9 +4,9 @@ import remarkGfm from 'remark-gfm';
 import { usePreview } from '../contexts/PreviewContext';
 import { useProject } from '../contexts/ProjectContext';
 import { theme } from '../lib/theme';
-import { fetchWikiPage, fetchWikiPages } from '../lib/api';
+import { fetchSources, fetchWikiPage, fetchWikiPages, sourceOriginalUrl } from '../lib/api';
 import { wikilinksToMarkdown, wikilinkTarget } from '../lib/wikiMarkdown';
-import type { WikiPage } from '../types';
+import type { RawSource, WikiPage } from '../types';
 
 /** 解析 wikilink 目标，支持标题/名称/路径模糊匹配 */
 function resolveWikiTarget(target: string, pages: WikiPage[]): string {
@@ -59,6 +59,7 @@ export function PreviewPanel() {
     updated?: string;
   } | null>(null);
   const [allPages, setAllPages] = useState<WikiPage[]>([]);
+  const [rawSources, setRawSources] = useState<Record<string, RawSource>>({});
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // Load page list for wikilink resolution
@@ -71,6 +72,11 @@ export function PreviewPanel() {
   }, [activeProjectId]);
 
   useEffect(() => { loadPages(); }, [loadPages]);
+  useEffect(() => {
+    fetchSources(activeProjectId)
+      .then((items) => setRawSources(Object.fromEntries(items.map((item: RawSource) => [item.id, item]))))
+      .catch(() => setRawSources({}));
+  }, [activeProjectId]);
 
   // 监听页面列表更新事件（摄入完成后触发）
   useEffect(() => {
@@ -178,15 +184,13 @@ export function PreviewPanel() {
               <div style={styles.metaRow}>
                 <span style={styles.metaLabel}>📄 来源</span>
                 <div style={styles.metaList}>
-                  {fm.sources.map((s, i) => (
-                    <span
-                      key={i}
-                      style={styles.sourceItem}
-                      onClick={() => handleClickLink(s)}
-                      title={s}
-                    >
-                      {s}
-                      <span style={styles.arrow}> →</span>
+                  {fm.sources.map((s, i) => rawSources[s] ? (
+                    <a key={i} style={styles.sourceItem} href={sourceOriginalUrl(s, activeProjectId)} title={`${rawSources[s].filename} · ${s}`} download>
+                      {rawSources[s].filename}<span style={styles.arrow}> ↓</span>
+                    </a>
+                  ) : (
+                    <span key={i} style={styles.sourceItem} onClick={() => handleClickLink(s)} title={`Legacy reference: ${s}`}>
+                      {s}<span style={styles.arrow}> →</span>
                     </span>
                   ))}
                 </div>

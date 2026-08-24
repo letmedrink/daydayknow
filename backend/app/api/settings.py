@@ -31,6 +31,7 @@ class SettingsUpdate(BaseModel):
     search_api_config: Optional[dict] = Field(default=None, alias="searchApiConfig")
     output_language: Optional[str] = Field(default=None, alias="outputLanguage")
     multimodal_model: Optional[str] = Field(default=None, alias="multimodalModel")
+    ingest_detailed_progress: Optional[bool] = Field(default=None, alias="ingestDetailedProgress")
     retrieval_config: Optional[dict] = Field(default=None, alias="retrievalConfig")
 
     model_config = {"populate_by_name": True}
@@ -60,6 +61,8 @@ async def update_settings(
         updates["outputLanguage"] = req.output_language
     if req.multimodal_model is not None:
         updates["multimodalModel"] = req.multimodal_model
+    if req.ingest_detailed_progress is not None:
+        updates["ingestDetailedProgress"] = req.ingest_detailed_progress
     if req.retrieval_config is not None:
         mode = req.retrieval_config.get("mode", "lexical")
         if mode not in {"lexical", "hybrid"}:

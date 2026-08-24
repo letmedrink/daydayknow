@@ -1,11 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { acceptIngestJob, ingestFile, fetchReviews, fetchWikiPages, regenerateIngestJob, rejectIngestJob } from '../lib/api';
+import { acceptIngestJob, ingestFile, fetchReviews, fetchWikiPages, regenerateIngestJob, rejectIngestJob, fetchSources, fetchSourceExtraction, sourceOriginalUrl } from '../lib/api';
 import { usePreview } from '../contexts/PreviewContext';
 import { useProject } from '../contexts/ProjectContext';
 import { refreshWikiPagesCache } from './ChatWindow';
 import { theme } from '../lib/theme';
-import type { ReviewItem } from '../types';
+import type { RawSource, ReviewItem } from '../types';
+import { ProposalDiff } from './ProposalDiff';
+import { IngestTrace } from './IngestTrace';
+import type { IngestTraceEvent } from '../types';
 
 const STEP_LABELS: Record<string, string> = {
   parse: '解析文档',
@@ -27,10 +30,16 @@ export function IngestPanel() {
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [sources, setSources] = useState<RawSource[]>([]);
+  const [sourcePreview, setSourcePreview] = useState<{ id: string; content: string } | null>(null);
+  const [trace, setTrace] = useState<IngestTraceEvent[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const navigate = useNavigate();
   const { activeProjectId } = useProject();
+
+  const loadSources = () => fetchSources(activeProjectId).then(setSources).catch(() => {});
+  useEffect(() => { void loadSources(); }, [activeProjectId]);
 
   // 摄入完成后自动加载审阅项
   useEffect(() => {
@@ -40,6 +49,20 @@ export function IngestPanel() {
         .catch(() => {});
     }
   }, [result, activeProjectId]);
+
+  const handleIngestEvent = (evt: any) => {
+    if (evt.type === 'detail') {
+      const event: IngestTraceEvent = {
+        stage: evt.stage, title: evt.title, message: evt.message,
+        timestamp: evt.timestamp, meta: evt.meta,
+      };
+      setTrace((current) => [...current, event]);
+      return;
+    }
+    setProgress(evt.progress || 0);
+    setStep(evt.step || '');
+    setMessage(evt.message || '');
+  };
 
   const handleFile = async (file: File) => {
     let force = false;
@@ -67,20 +90,19 @@ export function IngestPanel() {
     setMessage('');
     setResult(null);
     setReviews([]);
+    setTrace([]);
     const controller = new AbortController();
     abortRef.current?.abort();
     abortRef.current = controller;
 
     try {
-      const res = await ingestFile(file, (evt) => {
-        setProgress(evt.progress || 0);
-        setStep(evt.step || '');
-        setMessage(evt.message || '');
-      }, activeProjectId, force, controller.signal);
+      const res = await ingestFile(file, handleIngestEvent, activeProjectId, force, controller.signal);
       setResult({ ...res, proposals: res.proposals?.map((page: any) => ({ ...page, selected: true })) });
+      setTrace((current) => current.length ? current : (res.job?.trace || []));
       setProgress(1);
       setStep('done');
       setMessage(res.status === 'awaiting_review' ? '生成完成，请审核后决定是否写入' : '已命中缓存');
+      void loadSources();
     } catch (e: any) {
       if (e.name !== 'AbortError') {
         setStep('error');
@@ -125,12 +147,12 @@ export function IngestPanel() {
     const jobId = result?.job?.id;
     if (!jobId || !feedback.trim()) return;
     setLoading(true); setProgress(0); setStep(''); setMessage('按反馈重新生成...');
+    setTrace([]);
     const controller = new AbortController(); abortRef.current = controller;
     try {
-      const regenerated = await regenerateIngestJob(jobId, feedback, (evt) => {
-        setProgress(evt.progress || 0); setStep(evt.step || ''); setMessage(evt.message || '');
-      }, activeProjectId, controller.signal);
+      const regenerated = await regenerateIngestJob(jobId, feedback, handleIngestEvent, activeProjectId, controller.signal);
       setResult({ ...regenerated, proposals: regenerated.proposals?.map((page: any) => ({ ...page, selected: true })) });
+      setTrace((current) => current.length ? current : (regenerated.job?.trace || []));
       setFeedback(''); setProgress(1); setStep('done'); setMessage('已按反馈重新生成，请继续审核');
     } catch (e: any) {
       if (e.name !== 'AbortError') { setStep('error'); setMessage(e.message); }
@@ -190,6 +212,20 @@ export function IngestPanel() {
         />
       </div>
 
+      <div style={styles.sourceLibrary}>
+        <div style={styles.sourceHeader}><h3 style={styles.resultTitle}>Raw Sources</h3><button style={styles.actionBtn} onClick={loadSources}>刷新</button></div>
+        {sources.length === 0 ? <p style={styles.desc}>暂无永久来源；上传文件后原件和解析文本会保留在当前项目。</p> : sources.map((source) => (
+          <div key={source.id} style={styles.sourceRow}>
+            <div><strong>{source.filename}</strong><div style={styles.sourceMeta}>{source.id} · {(source.size / 1024).toFixed(1)} KB · {new Date(source.createdAt).toLocaleString()}</div></div>
+            <div style={styles.sourceActions}>
+              <button style={styles.actionBtn} onClick={async () => setSourcePreview({ id: source.id, content: await fetchSourceExtraction(source.id, activeProjectId) })}>解析文本</button>
+              <a style={styles.sourceLink} href={sourceOriginalUrl(source.id, activeProjectId)}>下载原件</a>
+            </div>
+          </div>
+        ))}
+        {sourcePreview && <details open style={styles.proposal}><summary>{sourcePreview.id} 解析文本</summary><pre style={styles.sourcePreview}>{sourcePreview.content}</pre></details>}
+      </div>
+
       {/* 进度条 */}
       {(loading || result) && (
         <div style={styles.progressSection}>
@@ -211,6 +247,7 @@ export function IngestPanel() {
           </div>
         </div>
       )}
+      <IngestTrace events={trace} />
 
       {/* 摄入结果 */}
       {result && (
@@ -252,9 +289,9 @@ export function IngestPanel() {
                 <details key={page.path} style={{ ...styles.proposal, opacity: page.selected === false ? 0.55 : 1 }}>
                   <summary>
                     <input type="checkbox" checked={page.selected !== false} onClick={(event) => event.stopPropagation()} onChange={(event) => updateProposal(index, { selected: event.target.checked })} />{' '}
-                    {page.title} · {page.path}{page.replaces_existing ? ' （将合并现有页）' : ''}
+                    {page.title} · {page.path}{page.operation === 'update' ? ' （完整更新）' : ' （新建）'}
                   </summary>
-                  <label style={styles.mergeLabel}><input type="checkbox" checked={page.merge !== false} onChange={(event) => updateProposal(index, { merge: event.target.checked })} /> 合并已有页面（关闭则覆盖）</label>
+                  {page.previousContent && <ProposalDiff before={page.previousContent} after={page.content} />}
                   <textarea style={styles.proposalEditor} value={page.content} onChange={(event) => updateProposal(index, { content: event.target.value })} disabled={page.selected === false} />
                 </details>
               ))}
@@ -437,4 +474,12 @@ const styles: Record<string, React.CSSProperties> = {
   feedbackInput: { flex: 1, minHeight: 64, padding: 9, border: `1px solid ${theme.border.light}`, borderRadius: theme.radius.sm, backgroundColor: theme.bg.content, color: theme.text.primary, resize: 'vertical' },
   actionBtn: { padding: '8px 12px', border: `1px solid ${theme.border.medium}`, borderRadius: theme.radius.sm, backgroundColor: theme.bg.raised, color: theme.text.primary, cursor: 'pointer' },
   qualityInfo: { padding: '8px 10px', marginBottom: 12, borderRadius: theme.radius.sm, backgroundColor: theme.bg.raised, color: theme.text.secondary, fontSize: 12 },
+  sourceLibrary: { marginTop: 18, padding: 14, border: `1px solid ${theme.border.light}`, borderRadius: theme.radius.md, backgroundColor: theme.bg.raised },
+  sourceHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  sourceRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '9px 0', borderTop: `1px solid ${theme.border.light}`, fontSize: 13 },
+  sourceMeta: { color: theme.text.tertiary, fontSize: 11, marginTop: 3, fontFamily: theme.fontMono },
+  sourceActions: { display: 'flex', gap: 6, alignItems: 'center' },
+  sourceLink: { padding: '8px 12px', border: `1px solid ${theme.border.medium}`, borderRadius: theme.radius.sm, color: theme.accent, textDecoration: 'none', fontSize: 12 },
+  sourcePreview: { whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto', fontSize: 11, backgroundColor: theme.bg.content, padding: 10 },
+  diffBox: { marginTop: 8, color: theme.text.secondary, fontSize: 12 },
 };

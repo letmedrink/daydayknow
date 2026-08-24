@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from ..dependencies import get_global_store, get_project_file_store, get_project_wiki_store
 from ..research.deep_research import run_deep_research
 from ..storage import FileStore, WikiStore
+from ..storage.wiki_store import StalePageError
 
 router = APIRouter(prefix="/api/projects/{project_id}/research")
 _RUNNING: dict[str, asyncio.Task] = {}
@@ -158,7 +159,7 @@ async def cancel_job(job_id: str, file_store: FileStore = Depends(get_project_fi
 
 @router.post("/jobs/{job_id}/accept")
 async def accept_job(
-    job_id: str, file_store: FileStore = Depends(get_project_file_store),
+    job_id: str, global_store: FileStore = Depends(get_global_store), file_store: FileStore = Depends(get_project_file_store),
     wiki_store: WikiStore = Depends(get_project_wiki_store),
 ):
     job = file_store.get_research_job(job_id)
@@ -168,14 +169,19 @@ async def accept_job(
         raise HTTPException(status_code=409, detail="研究任务不在待审核状态")
     result = job.get("result") or {}
     proposals = result.get("proposals", [])
-    snapshots = wiki_store.snapshot_pages([page["path"] for page in proposals])
+    snapshots = wiki_store.snapshot_pages(list(dict.fromkeys([page["path"] for page in proposals] + ["index.md", "log.md"])))
     old_reviews = file_store.read_json("reviews.json", [])
     try:
         committed = wiki_store.commit_pages(proposals)
+        wiki_store.rebuild_index_page()
+        wiki_store.append_log("research", job.get("topic", "研究"))
         if result.get("reviews"):
             file_store.add_reviews(result["reviews"])
         if job.get("reviewId"):
             file_store.resolve_review(job["reviewId"], "deep_research")
+    except StalePageError as exc:
+        wiki_store.restore_pages(snapshots)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except BaseException:
         wiki_store.restore_pages(snapshots)
         file_store.write_json("reviews.json", old_reviews)
@@ -185,6 +191,8 @@ async def accept_job(
     }
     accepted_result.pop("proposals", None)
     updated = file_store.update_research_job(job_id, status="accepted", step="done", message="研究结果已写入 Wiki", result=accepted_result)
+    from .changes import maybe_schedule_auto_lint
+    maybe_schedule_auto_lint(file_store, wiki_store, global_store)
     return {"success": True, "data": updated}
 
 

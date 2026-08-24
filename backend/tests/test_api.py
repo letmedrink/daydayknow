@@ -5,6 +5,8 @@ from app.main import app
 from app.agents import chat_agent
 from app.ingest import pipeline
 from app.api import research as research_api
+from app.wiki import change_pipeline
+from app.storage import SourceStore
 import io
 import json
 import zipfile
@@ -80,11 +82,13 @@ def test_settings_keys_are_redacted_and_blank_update_preserves_them(tmp_path):
             client.patch("/api/settings", json={
                 "llmProviders": {"one": provider},
                 "searchApiConfig": {"provider": "tavily", "api_key": "search-secret"},
+                "ingestDetailedProgress": True,
             })
             visible = client.get("/api/settings").json()["data"]
             assert visible["llmProviders"]["one"]["api_key"] == ""
             assert visible["llmProviders"]["one"]["has_api_key"] is True
             assert visible["searchApiConfig"]["api_key"] == ""
+            assert visible["ingestDetailedProgress"] is True
 
             provider["api_key"] = ""
             client.patch("/api/settings", json={"llmProviders": {"one": provider}})
@@ -184,10 +188,13 @@ def test_ingest_requires_acceptance_and_can_be_rejected(tmp_path, monkeypatch):
         with TestClient(app) as client:
             project = client.post("/api/projects", json={"name": "approval"}).json()["data"]
             base = f"/api/projects/{project['id']}/ingest"
+            client.patch("/api/settings", json={"ingestDetailedProgress": True})
             first = client.post(base, files={"file": ("one.txt", b"source", "text/plain")})
+            assert '"type": "detail"' in first.text
             event = [line for line in first.text.splitlines() if line.startswith("data:")][-1]
             job = __import__("json").loads(event[5:])["job"]
             assert job["status"] == "awaiting_review"
+            assert any(item["title"] == "生成完整 Wiki 提案" for item in job["trace"])
             assert not (tmp_path / "projects" / project["id"] / "wiki/concepts/preview.md").exists()
             assert client.post(f"{base}/jobs/{job['id']}/reject").status_code == 200
             assert not (tmp_path / "projects" / project["id"] / "wiki/concepts/preview.md").exists()
@@ -279,5 +286,47 @@ def test_research_is_staged_until_acceptance_and_can_link_review(tmp_path, monke
             assert client.post(f"{base}/jobs/{job['id']}/accept").status_code == 200
             assert page.exists()
             assert store.get_review(review["id"])["resolved"] is True
+    finally:
+        settings.DATA_DIR = original_data_dir
+
+
+def test_schema_sources_and_query_backfill_are_project_scoped(tmp_path, monkeypatch):
+    original_data_dir = settings.DATA_DIR
+    settings.DATA_DIR = str(tmp_path)
+
+    async def fake_change_llm(*_args, **_kwargs):
+        return '---FILE: wiki/synthesis/回答综合.md---\n---\ntitle: 回答综合\ntype: synthesis\nsources: []\n---\nanswer synthesis\n---END FILE---'
+
+    monkeypatch.setattr(change_pipeline, "call_llm", fake_change_llm)
+    try:
+        with TestClient(app) as client:
+            project = client.post("/api/projects", json={"name": "method"}).json()["data"]
+            project_id = project["id"]
+            schema_url = f"/api/projects/{project_id}/schema"
+            schema = client.get(schema_url).json()["data"]
+            schema["config"]["language"] = "en"
+            assert client.patch(schema_url, json=schema).status_code == 200
+
+            source = SourceStore(project["path"]).put("evidence.txt", b"evidence", "evidence", 1)
+            assert client.get(f"/api/projects/{project_id}/sources").json()["data"][0]["id"] == source["id"]
+            assert client.get(f"/api/projects/{project_id}/sources/{source['id']}/extraction").text == "evidence"
+
+            wiki = app.state.project_store.get_runtime(project_id)[1]
+            wiki.write_page("concepts/evidence.md", {"title": "Evidence", "type": "concept", "sources": [source["id"]]}, "evidence")
+            file_store = app.state.project_store.get_runtime(project_id)[0]
+            saved = file_store.save_turn(
+                file_store.new_conversation_id(), "question",
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "answer", "references": [{"title": "Evidence", "path": "concepts/evidence.md"}]},
+            )
+            conv_id = saved["conversation"]["id"]
+            message_id = saved["messages"][-1]["id"]
+            created = client.post(f"/api/projects/{project_id}/changes/query", json={"conversation_id": conv_id, "message_id": message_id})
+            assert created.status_code == 200
+            job = created.json()["data"]
+            assert job["status"] == "awaiting_review"
+            assert not (tmp_path / "projects" / project_id / "wiki/synthesis/回答综合.md").exists()
+            assert client.post(f"/api/projects/{project_id}/changes/jobs/{job['id']}/accept").status_code == 200
+            assert (tmp_path / "projects" / project_id / "wiki/synthesis/回答综合.md").exists()
     finally:
         settings.DATA_DIR = original_data_dir

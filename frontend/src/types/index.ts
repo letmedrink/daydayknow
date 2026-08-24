@@ -1,4 +1,6 @@
 export interface Message {
+  id?: string;
+  timestamp?: number;
   role: 'user' | 'assistant';
   content: string;
   references?: WikiReference[];
@@ -18,7 +20,7 @@ export interface WikiReference {
 export interface SSECallbacks {
   onChunk: (content: string) => void;
   onReasoning?: (content: string) => void;
-  onDone: (conversationId: string) => void;
+  onDone: (conversationId: string, messageId?: string) => void;
   onOptions: (options: GuidedOption[]) => void;
   onReferences: (references: WikiReference[]) => void;
   onError: (error: Error) => void;
@@ -161,7 +163,44 @@ export interface AppSettings {
   searchApiConfig: Record<string, any>;
   outputLanguage: string;
   multimodalModel?: string;
+  ingestDetailedProgress?: boolean;
   retrievalConfig?: { mode: 'lexical' | 'hybrid'; candidateLimit: number; rerankLimit: number };
+}
+
+export interface ProjectSchema {
+  config: {
+    version: number;
+    revision?: number;
+    language: string;
+    filenamePolicy: string;
+    pageTypes: Array<{ id: string; label: string; directory: string; enabled: boolean }>;
+    requiredFrontmatter: string[];
+    specialPages: { index: string; log: string };
+    reviewTypes: string[];
+    lint: { autoEveryAcceptedChanges: number };
+  };
+  instructions: string;
+}
+
+export interface RawSource {
+  id: string;
+  filename: string;
+  sha256: string;
+  size: number;
+  mimeType: string;
+  parserVersion: number;
+  createdAt: number;
+  url?: string;
+  title?: string;
+  kind?: string;
+}
+
+export interface IngestTraceEvent {
+  stage: string;
+  title: string;
+  message?: string;
+  timestamp: number;
+  meta?: Array<{ label: string; value: string }>;
 }
 
 export interface UserProfile {

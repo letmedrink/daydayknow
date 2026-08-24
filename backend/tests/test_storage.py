@@ -3,7 +3,8 @@ import json
 
 import pytest
 
-from app.storage import FileStore, WikiStore
+from app.storage import FileStore, ProjectSchemaStore, SourceStore, WikiStore
+from app.storage.wiki_store import StalePageError
 from app.storage import file_store as file_store_module
 from app.storage.project_store import ProjectStore
 
@@ -204,3 +205,42 @@ def test_hybrid_search_recovers_fuzzy_title_match(tmp_path):
     store.write_page("concepts/retrieval.md", {"title": "Retrieval Architecture", "type": "concept"}, "index")
     results = store.hybrid_search("Retrievel Architecture")
     assert results[0]["path"] == "concepts/retrieval.md"
+
+
+def test_project_schema_defaults_are_isolated_and_used_types_are_stable(tmp_path):
+    left = ProjectSchemaStore(tmp_path / "left")
+    right = ProjectSchemaStore(tmp_path / "right")
+    left_schema = left.ensure()
+    right.ensure()
+    changed = {**left_schema["config"], "language": "en"}
+    left.update(changed, "English project")
+    assert left.get()["config"]["language"] == "en"
+    assert right.get()["config"]["language"] == "zh-CN"
+    removed = {**left.get()["config"], "pageTypes": [item for item in left.get()["config"]["pageTypes"] if item["id"] != "concept"]}
+    with pytest.raises(ValueError, match="不能删除"):
+        left.update(removed, "rules", {"concept": "concepts"})
+
+
+def test_raw_sources_are_content_addressed_and_keep_extractions(tmp_path):
+    store = SourceStore(tmp_path)
+    first = store.put("one.txt", b"same", "parsed", 1)
+    duplicate = store.put("renamed.txt", b"same", "parsed", 1)
+    changed = store.put("one.txt", b"different", "changed", 1)
+    assert first["id"] == duplicate["id"]
+    assert changed["id"] != first["id"]
+    assert store.original_path(first["id"]).read_bytes() == b"same"
+    assert store.read_extraction(first["id"]) == "parsed"
+    upgraded = store.put("renamed.txt", b"same", "parsed-v2", 2)
+    assert upgraded["extractionVersions"] == [1, 2]
+    assert store.read_extraction(first["id"]) == "parsed-v2"
+    assert store.read_extraction(first["id"], 1) == "parsed"
+
+
+def test_staged_page_hash_rejects_stale_update(tmp_path):
+    store = WikiStore(tmp_path)
+    store.write_raw_page("concepts/page.md", "old")
+    base = store.page_sha256("concepts/page.md")
+    store.write_raw_page("concepts/page.md", "user edit")
+    with pytest.raises(StalePageError):
+        store.commit_pages([{"path": "concepts/page.md", "content": "generated", "baseSha256": base, "merge": False}])
+    assert store.read_page("concepts/page.md")["body"] == "user edit"

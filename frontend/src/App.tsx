@@ -118,6 +118,7 @@ function ProjectWorkspace({ onBack }: { onBack: () => void }) {
         currentOptions={chat.currentOptions}
         conversations={convs.conversations}
         activeConversationId={convs.activeConversationId}
+        conversationId={chat.conversationId}
         onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}

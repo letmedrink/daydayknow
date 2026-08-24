@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from ..config import settings
 from ..dependencies import get_global_store, get_project_file_store, get_project_wiki_store
 from ..ingest.pipeline import PIPELINE_VERSION, run_ingest_pipeline
-from ..storage import FileStore, WikiStore
+from ..storage import FileStore, ProjectSchemaStore, SourceStore, WikiStore
+from ..storage.wiki_store import StalePageError
 
 router = APIRouter(prefix="/api/projects/{project_id}/ingest")
 _RUNNING: dict[str, asyncio.Task] = {}
@@ -66,6 +67,7 @@ def _start_job(
     queue: asyncio.Queue = asyncio.Queue()
     job_id = job["id"]
     stage_dir = file_store.data_dir / "ingest-jobs" / job_id / "stage"
+    detailed_progress = bool(global_store.get_settings().get("ingestDetailedProgress", False))
 
     async def on_progress(step, progress, message):
         updated = file_store.update_ingest_job(
@@ -75,13 +77,28 @@ def _start_job(
             raise asyncio.CancelledError
         await queue.put({"type": "progress", "job_id": job_id, "step": step, "progress": progress, "message": message})
 
+    async def on_detail(event: dict):
+        if not detailed_progress:
+            return
+        public_event = {"type": "detail", "job_id": job_id, **event}
+        file_store.append_ingest_trace(job_id, event)
+        await queue.put(public_event)
+
     async def run():
         try:
-            file_store.update_ingest_job(job_id, status="running", step="parse", progress=0)
+            file_store.update_ingest_job(job_id, status="running", step="parse", progress=0, trace=[])
+            source_store = SourceStore(file_store.data_dir)
+            try:
+                payload = file_store.ingest_job_source(job_id)
+            except FileNotFoundError:
+                source_id = str(job.get("sourceId") or "")
+                payload = source_store.original_path(source_id).read_bytes()
             result = await run_ingest_pipeline(
-                job["filename"], file_store.ingest_job_source(job_id), file_store, wiki_store, global_store,
+                job["filename"], payload, file_store, wiki_store, global_store,
                 progress_callback=on_progress, force=bool(job.get("force")), auto_commit=False, stage_dir=stage_dir,
                 custom_instructions=str(job.get("instructions") or ""),
+                schema_store=ProjectSchemaStore(file_store.data_dir), source_store=source_store,
+                detail_callback=on_detail if detailed_progress else None,
             )
             if result.get("cached"):
                 status = "accepted"
@@ -92,7 +109,7 @@ def _start_job(
             updated = file_store.update_ingest_job(
                 job_id, status=status, step="review" if status == "awaiting_review" else "done",
                 progress=1, message="请预览后接受或拒绝" if status == "awaiting_review" else "已命中摄入缓存",
-                result=result,
+                result=result, sourceId=result.get("source_id"),
             )
             await queue.put({"type": "done", "job": _public_job(updated or {}), "result": result})
         except asyncio.CancelledError:
@@ -198,8 +215,11 @@ async def regenerate_job(
         raise HTTPException(status_code=400, detail="请填写重新生成要求")
     try:
         file_store.ingest_job_source(job_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=409, detail="原始文件已清理，无法重新生成") from exc
+    except FileNotFoundError:
+        try:
+            SourceStore(file_store.data_dir).original_path(str(job.get("sourceId") or ""))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=409, detail="原始来源不存在，无法重新生成") from exc
     updated = file_store.update_ingest_job(
         job_id, status="pending", step="queued", progress=0, force=True,
         instructions=feedback, result=None, message="按反馈重新生成",
@@ -259,6 +279,7 @@ def _restore_media(snapshots: list[tuple[Path, bytes | None]]):
 @router.post("/jobs/{job_id}/accept")
 async def accept_job(
     job_id: str, req: AcceptIngestRequest | None = None,
+    global_store: FileStore = Depends(get_global_store),
     file_store: FileStore = Depends(get_project_file_store),
     wiki_store: WikiStore = Depends(get_project_wiki_store),
 ):
@@ -279,12 +300,15 @@ async def accept_job(
             proposals.append({**allowed[submitted.path], "content": submitted.content, "merge": submitted.merge})
     if not proposals:
         raise HTTPException(status_code=400, detail="至少选择一个页面写入")
-    page_snapshots = wiki_store.snapshot_pages([page["path"] for page in proposals])
+    snapshot_paths = list(dict.fromkeys([page["path"] for page in proposals] + ["index.md", "log.md"]))
+    page_snapshots = wiki_store.snapshot_pages(snapshot_paths)
     old_reviews = file_store.read_json("reviews.json", [])
     old_cache = file_store.read_json("ingest-cache.json", {"entries": {}})
     media_snapshots = _copy_staged_media(file_store, wiki_store, job_id, result.get("media_files", []))
     try:
         committed = wiki_store.commit_pages(proposals)
+        wiki_store.rebuild_index_page()
+        wiki_store.append_log("ingest", job.get("filename", "来源"))
         files_written = [f"wiki/{path}" for path in committed]
         selected_paths = {f"wiki/{page['path']}" for page in proposals} | {page["path"] for page in proposals}
         selected_reviews = [review for review in result.get("reviews", []) if not review.get("affectedPages") or selected_paths.intersection(review.get("affectedPages", []))]
@@ -294,6 +318,10 @@ async def accept_job(
             job["filename"], result["source_hash"], files_written,
             result.get("pipeline_version", PIPELINE_VERSION),
         )
+    except StalePageError as exc:
+        wiki_store.restore_pages(page_snapshots)
+        _restore_media(media_snapshots)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except BaseException:
         wiki_store.restore_pages(page_snapshots)
         file_store.write_json("reviews.json", old_reviews)
@@ -308,6 +336,8 @@ async def accept_job(
     (job_dir / "source.bin").unlink(missing_ok=True)
     shutil.rmtree(job_dir / "stage", ignore_errors=True)
     updated = file_store.update_ingest_job(job_id, status="accepted", step="done", message="摄入已接受并写入 Wiki", result=result)
+    from .changes import maybe_schedule_auto_lint
+    maybe_schedule_auto_lint(file_store, wiki_store, global_store)
     return {"success": True, "data": _public_job(updated or {})}
 
 
@@ -344,8 +374,9 @@ async def ingest_batch(
             result = await run_ingest_pipeline(
                 file.filename, content, file_store, wiki_store, global_store,
                 auto_commit=False, stage_dir=file_store.data_dir / "ingest-jobs" / job["id"] / "stage",
+                schema_store=ProjectSchemaStore(file_store.data_dir), source_store=SourceStore(file_store.data_dir),
             )
-            updated = file_store.update_ingest_job(job["id"], status="awaiting_review", result=result, progress=1, step="review")
+            updated = file_store.update_ingest_job(job["id"], status="awaiting_review", result=result, progress=1, step="review", sourceId=result.get("source_id"))
             results.append({"filename": file.filename, "job": _public_job(updated or {})})
         except Exception as exc:
             results.append({"filename": file.filename, "error": str(exc)})

@@ -15,3 +15,27 @@ test('creates and enters a project without external services', async ({ page, re
   const project = projects.data.find((item: any) => item.name === name);
   if (project) await request.delete(`http://127.0.0.1:8011/api/projects/${project.id}/data`, { data: { confirmation: name } });
 });
+
+test('keeps project schemas isolated', async ({ request }) => {
+  const suffix = Date.now();
+  const firstName = `Schema-A-${suffix}`;
+  const secondName = `Schema-B-${suffix}`;
+  const first = (await (await request.post('http://127.0.0.1:8011/api/projects', { data: { name: firstName } })).json()).data;
+  const second = (await (await request.post('http://127.0.0.1:8011/api/projects', { data: { name: secondName } })).json()).data;
+
+  try {
+    const firstUrl = `http://127.0.0.1:8011/api/projects/${first.id}/schema`;
+    const secondUrl = `http://127.0.0.1:8011/api/projects/${second.id}/schema`;
+    const firstSchema = (await (await request.get(firstUrl)).json()).data;
+    expect(firstSchema.config.language).toBe('zh-CN');
+
+    firstSchema.config.language = 'en';
+    const patched = await request.patch(firstUrl, { data: firstSchema });
+    expect(patched.ok()).toBeTruthy();
+    expect((await (await request.get(firstUrl)).json()).data.config.language).toBe('en');
+    expect((await (await request.get(secondUrl)).json()).data.config.language).toBe('zh-CN');
+  } finally {
+    await request.delete(`http://127.0.0.1:8011/api/projects/${first.id}/data`, { data: { confirmation: firstName } });
+    await request.delete(`http://127.0.0.1:8011/api/projects/${second.id}/data`, { data: { confirmation: secondName } });
+  }
+});

@@ -47,3 +47,36 @@ async def test_ingest_cache_uses_raw_content_and_force_bypasses_it(tmp_path, mon
     assert second["cached"] is True
     assert forced["cached"] is False
     assert calls == 4
+
+
+@pytest.mark.asyncio
+async def test_long_ingest_analyzes_tail_and_keeps_raw_source(tmp_path, monkeypatch):
+    global_store = FileStore(tmp_path / "global")
+    project_store = FileStore(tmp_path / "project")
+    wiki_store = WikiStore(tmp_path / "project")
+    calls = []
+    details = []
+
+    async def fake_call(_store, _system, user):
+        calls.append(user)
+        if user.startswith("分析结果"):
+            return '---FILE: wiki/concepts/长文档.md---\n---\ntitle: 长文档\ntype: concept\nsources: []\n---\ntail kept\n---END FILE---'
+        return "TAIL_SEEN" if "TAIL_MARKER" in user else "chunk"
+
+    monkeypatch.setattr(pipeline, "call_llm", fake_call)
+    content = ("a" * 85_000 + "TAIL_MARKER").encode()
+    async def capture_detail(event):
+        details.append(event)
+
+    result = await pipeline.run_ingest_pipeline(
+        "long.txt", content, project_store, wiki_store, global_store,
+        auto_commit=False, detail_callback=capture_detail,
+    )
+    assert result["generation_info"]["analysis_chunks"] >= 3
+    assert any("TAIL_MARKER" in call for call in calls)
+    assert result["source_id"].startswith("src_")
+    assert (tmp_path / "project/raw/sources" / result["source_id"] / "original.txt").exists()
+    assert result["proposals"][0]["baseSha256"] is None
+    assert any(event["title"] == "分析分块计划" and event["meta"][0]["value"] == "3" for event in details)
+    assert any(event["title"] == "生成完整 Wiki 提案" for event in details)
+    assert all("api_key" not in str(event).lower() for event in details)

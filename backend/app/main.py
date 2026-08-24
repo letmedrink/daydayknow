@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .api import chat, ingest, projects, research, reviews, wiki
+from .api import changes, chat, ingest, projects, research, reviews, schema, sources, wiki
 from .api import settings as settings_api
 from .config import settings
 from .storage import FileStore
@@ -97,6 +97,9 @@ app.include_router(wiki.router, tags=["Wiki"])
 app.include_router(ingest.router, tags=["文档摄入"])
 app.include_router(reviews.router, tags=["审阅项"])
 app.include_router(research.router, tags=["深度研究"])
+app.include_router(schema.router, tags=["项目 Schema"])
+app.include_router(sources.router, tags=["原始来源"])
+app.include_router(changes.router, tags=["Wiki 变更与 Lint"])
 app.include_router(settings_api.router, tags=["设置"])
 
 

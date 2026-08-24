@@ -34,6 +34,7 @@ class FileStore:
             "profile",          # 用户画像 (profile/profile.json)
             "ingest-jobs",      # 持久化的摄入任务、源文件和暂存媒体
             "research-jobs",    # 持久化的 Deep Research 任务
+            "change-jobs",      # 问答回写和 Wiki Lint 变更任务
         ]:
             (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
 
@@ -221,6 +222,7 @@ class FileStore:
             "searchApiConfig": {},
             "outputLanguage": "zh-CN",
             "multimodalModel": "",
+            "ingestDetailedProgress": False,
             "retrievalConfig": {"mode": "lexical", "candidateLimit": 12, "rerankLimit": 5},
         })
 
@@ -384,6 +386,21 @@ class FileStore:
             return dict(job)
         return self.mutate_json(path, {}, update)
 
+    def append_ingest_trace(self, job_id: str, event: dict) -> Optional[dict]:
+        """Persist a bounded, redacted execution trace on an ingest job."""
+        if not re_safe_id(job_id, "ingest_"):
+            return None
+        path = f"ingest-jobs/{job_id}/job.json"
+        if not (self.data_dir / path).exists():
+            return None
+        def update(job):
+            trace = list(job.get("trace") or [])
+            trace.append(event)
+            job["trace"] = trace[-300:]
+            job["updatedAt"] = int(time.time() * 1000)
+            return dict(job)
+        return self.mutate_json(path, {}, update)
+
     def list_ingest_jobs(self) -> list[dict]:
         jobs = []
         root = self.data_dir / "ingest-jobs"
@@ -479,6 +496,77 @@ class FileStore:
             raise ValueError("运行中的任务不能删除")
         shutil.rmtree(self.data_dir / "research-jobs" / job_id)
         return True
+
+    # ─── 统一 Wiki 变更任务 ───────────────────────────
+
+    def create_change_job(self, kind: str, title: str, origin: Optional[dict] = None) -> dict:
+        if kind not in {"query", "lint"}:
+            raise ValueError("不支持的变更任务类型")
+        job_id = f"change_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+        now = int(time.time() * 1000)
+        job = {
+            "id": job_id, "kind": kind, "title": title, "origin": origin or {},
+            "status": "pending", "step": "queued", "progress": 0,
+            "createdAt": now, "updatedAt": now,
+        }
+        self.write_json(f"change-jobs/{job_id}/job.json", job)
+        return job
+
+    def get_change_job(self, job_id: str) -> Optional[dict]:
+        if not re_safe_id(job_id, "change_"):
+            return None
+        return self.read_json(f"change-jobs/{job_id}/job.json")
+
+    def update_change_job(self, job_id: str, **fields) -> Optional[dict]:
+        if not re_safe_id(job_id, "change_"):
+            return None
+        path = f"change-jobs/{job_id}/job.json"
+        if not (self.data_dir / path).exists():
+            return None
+        def update(job):
+            job.update(fields)
+            job["updatedAt"] = int(time.time() * 1000)
+            return dict(job)
+        return self.mutate_json(path, {}, update)
+
+    def list_change_jobs(self) -> list[dict]:
+        jobs = []
+        for path in (self.data_dir / "change-jobs").glob("change_*/job.json"):
+            job = self.read_json(str(path.relative_to(self.data_dir)))
+            if job:
+                jobs.append(job)
+        return sorted(jobs, key=lambda item: item.get("createdAt", 0), reverse=True)
+
+    def recover_change_jobs(self) -> list[dict]:
+        recovered = []
+        for job in self.list_change_jobs():
+            if job.get("status") in {"pending", "running"}:
+                updated = self.update_change_job(
+                    job["id"], status="interrupted", step="interrupted",
+                    message="服务重启导致任务中断，可重试",
+                )
+                if updated:
+                    recovered.append(updated)
+        return recovered
+
+    def delete_change_job(self, job_id: str) -> bool:
+        job = self.get_change_job(job_id)
+        if not job:
+            return False
+        if job.get("status") in {"pending", "running"}:
+            raise ValueError("运行中的任务不能删除")
+        shutil.rmtree(self.data_dir / "change-jobs" / job_id)
+        return True
+
+    def record_accepted_change(self) -> int:
+        """Increment and return the number of accepted changes since the last auto lint."""
+        def update(state):
+            state["acceptedSinceLint"] = int(state.get("acceptedSinceLint", 0)) + 1
+            return state["acceptedSinceLint"]
+        return self.mutate_json("maintenance-state.json", {"acceptedSinceLint": 0}, update)
+
+    def reset_accepted_change_count(self) -> None:
+        self.write_json("maintenance-state.json", {"acceptedSinceLint": 0})
 
 
 def re_safe_id(value: str, prefix: str) -> bool:

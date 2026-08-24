@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { GuidedOptions } from './GuidedOptions';
 import { usePreview } from '../contexts/PreviewContext';
 import { useProject } from '../contexts/ProjectContext';
-import { fetchWikiPages } from '../lib/api';
+import { createQueryChange, fetchWikiPages } from '../lib/api';
 import { theme } from '../lib/theme';
 import type { Message, GuidedOption, WikiReference, Conversation, WikiPage } from '../types';
 
@@ -221,6 +221,7 @@ interface ChatWindowProps {
   currentOptions: GuidedOption[];
   conversations: Conversation[];
   activeConversationId: string | null;
+  conversationId: string | null;
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onDeleteConversation: (id: string) => void;
@@ -230,9 +231,12 @@ export function ChatWindow({
   messages, streamingContent, isLoading, sendMessage, cancelMessage,
   currentOptions,
   conversations, activeConversationId,
+  conversationId,
   onSelectConversation, onNewConversation, onDeleteConversation,
 }: ChatWindowProps) {
   const [input, setInput] = useState('');
+  const [savingMessage, setSavingMessage] = useState<string | null>(null);
+  const [saveNotice, setSaveNotice] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { openPreview } = usePreview();
   const { activeProjectId } = useProject();
@@ -254,6 +258,17 @@ export function ChatWindow({
 
   const handleRefClick = (ref: WikiReference) => {
     openPreview(ref.path);
+  };
+
+  const saveToWiki = async (messageId: string) => {
+    if (!conversationId) return;
+    setSavingMessage(messageId); setSaveNotice('');
+    try {
+      await createQueryChange(conversationId, messageId, activeProjectId);
+      setSaveNotice('已生成待审阅 Wiki 提案，可到任务中心处理');
+    } catch (error) {
+      setSaveNotice(error instanceof Error ? error.message : String(error));
+    } finally { setSavingMessage(null); }
   };
 
   return (
@@ -332,6 +347,11 @@ export function ChatWindow({
                   ))}
                 </div>
               )}
+              {msg.role === 'assistant' && msg.id && msg.references && msg.references.length > 0 && (
+                <button style={styles.saveWikiBtn} disabled={savingMessage === msg.id} onClick={() => void saveToWiki(msg.id!)}>
+                  {savingMessage === msg.id ? '生成提案中...' : '保存到 Wiki'}
+                </button>
+              )}
               {msg.role === 'assistant' && msg.options && msg.options.length > 0 && i === messages.length - 1 && !streamingContent && (
                 <GuidedOptions options={msg.options} onSelect={handleOptionSelect} disabled={isLoading} />
               )}
@@ -349,6 +369,7 @@ export function ChatWindow({
           )}
 
           <div ref={messagesEndRef} />
+          {saveNotice && <div style={styles.saveNotice}>{saveNotice}</div>}
         </div>
 
         {!streamingContent && currentOptions.length > 0 && messages.length > 0 && !isLoading && (
@@ -444,6 +465,8 @@ const styles: Record<string, React.CSSProperties> = {
     border: `1px solid ${theme.border.light}`,
   },
   refTagClickable: { cursor: 'pointer', transition: 'all 0.12s' },
+  saveWikiBtn: { marginTop: 8, padding: '5px 9px', border: `1px solid ${theme.border.medium}`, borderRadius: theme.radius.sm, backgroundColor: theme.bg.content, color: theme.accent, cursor: 'pointer', fontSize: 12 },
+  saveNotice: { padding: 8, marginBottom: 12, borderRadius: theme.radius.sm, backgroundColor: theme.accentBg, color: theme.accent, fontSize: 12 },
   optionsBar: { padding: '4px 24px 8px', maxWidth: 720, margin: '0 auto', width: '100%', boxSizing: 'border-box' },
   refsBar: {
     display: 'flex', alignItems: 'center', gap: 6,

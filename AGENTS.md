@@ -39,6 +39,7 @@ llmwiki 是一个面向可信本机单用户的 Local-first AI Knowledge Engine�
 ```text
 Document / Web Source
   → Parse and Analyze
+  → Persist Immutable Raw Source
   → Generate Typed Wiki Proposals
   → Human Review
   → Transactional Commit
@@ -78,6 +79,9 @@ Document / Web Source
 - `backend/app/wiki/context_budget.py`：聊天窗口预算分配。
 - `backend/app/storage/file_store.py`：JSON、对话、任务、审阅和缓存。
 - `backend/app/storage/wiki_store.py`：Markdown、历史、索引、检索和图谱。
+- `backend/app/storage/schema_store.py`：项目级 Schema 默认值、校验和版本。
+- `backend/app/storage/source_store.py`：内容寻址 Raw Sources 与版本化解析文本。
+- `backend/app/wiki/change_pipeline.py`：问答回写与 Wiki Lint 提案。
 - `backend/app/storage/project_store.py`：项目索引、路径解析、Runtime 复用和项目删除。
 
 ### 部署
@@ -109,6 +113,10 @@ data/projects/{project_id}/
 ├── ingest-cache.json
 ├── ingest-jobs/
 ├── research-jobs/
+├── change-jobs/
+├── schema.json
+├── schema.md
+├── raw/sources/
 ├── page-history/
 └── wiki/
 ```
@@ -140,10 +148,13 @@ Wiki、对话、摄入、审阅、研究、媒体和页面历史必须严格按�
 
 - 缓存 Hash 必须基于未注入图片描述的原始解析文本，并包含 `PIPELINE_VERSION`。
 - `force=true` 明确绕过缓存。
-- 两阶段流程是先分析，再根据分析生成 FILE/REVIEW 块。
+- 原始字节必须先写入不可变 Raw Source；相同内容复用 source ID，解析升级新增 extraction 版本。
+- 长文档按标题和字符预算覆盖全文分析，再根据事实和实体检索候选旧页面。
+- 生成必须注入项目 Schema、稳定 source ID 和候选页实际正文，并返回完整目标页。
 - 生成结果默认进入持久化 Staging Job；没有用户 Accept 不得修改正式 Wiki。
-- 用户可以逐页选择、编辑、合并/覆盖、拒绝或携带反馈重新生成。
+- 新提案使用 `create|update`、`baseSha256`、`schemaVersion`、`sourceIds` 和完整内容；旧任务格式继续兼容。
 - 接受时只允许提交原任务中存在的 Proposal Path。
+- 接受更新前必须校验 `baseSha256`；`index.md` 和 `log.md` 只能由后端维护。
 - 媒体必须写入当前项目的 Wiki 路径，不得使用全局 DATA_DIR 定位项目文件。
 
 ### 存储可靠性

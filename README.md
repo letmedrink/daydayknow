@@ -6,7 +6,10 @@ llmwiki 是一个面向可信本机单用户的 AI 知识库：通过文档摄�
 
 - 将 PDF、PPTX、DOCX、TXT、Markdown、CSV 和 JSON 整理为结构化 Wiki
 - 在写入前预览、接受或拒绝 AI 生成的页面，支持取消、重试和强制重新摄入
+- 每个项目拥有独立的机器 Schema 与维护说明，默认值完整兼容原有页面类型
+- 以内容哈希永久保存上传原件和带版本的解析文本，相同内容自动去重
 - 基于项目 Wiki 进行带引用的流式对话
+- 将已持久化的问答保存为待审 Wiki 变更，并运行确定性与语义 Wiki Lint
 - 浏览、搜索和直接编辑 Markdown 页面，查看页面历史与知识图谱
 - 创建、重命名、合并和恢复 Wiki 页面，重命名或合并时自动修复 Wikilink
 - 使用 Tavily 或 SerpApi 执行 Deep Research，并在接受后写入 Wiki
@@ -114,7 +117,9 @@ npm run dev
 
 ### 文档摄入
 
-摄入任务先解析原文和图片，再由 LLM 按项目已有页面与生成规则产出暂存 Wiki。前端展示预览后，可以逐页选择、编辑 Markdown、决定合并或覆盖，也可以填写反馈重新生成；只有“接受”才会原子写入正式 Wiki，“拒绝”会丢弃暂存结果。相同原文默认命中带 pipeline 版本的缓存，确认重新导入时会发送 `force=true` 绕过缓存。
+摄入任务先把原件写入项目 Raw Sources，再确定性解析；长文档按标题和字符预算分块分析，不截断尾部。系统根据分析结果混合检索候选旧页面，把实际旧正文和项目 Schema 一起交给模型生成完整的 `create` 或 `update` 提案。前端展示逐页预览后，可以选择、编辑、接受或拒绝；只有“接受”才会校验旧页面哈希并成组写入正式 Wiki。审阅期间页面发生变化会返回 409，避免覆盖人工编辑。拒绝提案不会删除 Raw Source。
+
+`index.md` 在提交后由页面元数据确定性重建，`log.md` 由后端追加。AI 生成的摄入、研究、问答回写和 Lint 修复都遵守 `proposal → preview/diff → accept/reject → transactional commit`，模型不能直接修改正式 Wiki。
 
 最终质量主要取决于模型的长文本理解和结构化输出能力、摄入提示词、源文档质量，以及项目中已有 Wiki 的结构。建议先用小文档验证模型配置和页面规则，再处理大文档。
 
@@ -124,10 +129,12 @@ npm run dev
 
 Deep Research 需要配置 Tavily 或 SerpApi。它会去重搜索结果、抓取公开网页正文并用 `[S1]` 形式绑定结论与来源；私网和本机地址不会被抓取。未配置、全部搜索失败或没有结果时任务会终止，不会让 LLM 在无来源情况下生成 Wiki。研究结果同样需要预览并接受后才写入。
 
+每条已持久化且带 Wiki 引用的助手消息可生成“保存到 Wiki”变更任务。Task Center 统一展示问答回写和 Lint 任务；Lint 的确定性规则覆盖断链、孤立页、Schema、来源和索引一致性，语义阶段检查重复、矛盾、陈旧或无证据断言。自动 Lint 默认关闭，可在项目 Schema 中按累计接受次数启用。
+
 ## API 概览
 
 - 全局：`/api/projects`、`/api/settings`、`/api/profile`
-- 项目：`/api/projects/{project_id}/chat|conversations|wiki|ingest|reviews|research`
+- 项目：`/api/projects/{project_id}/chat|conversations|wiki|ingest|reviews|research|schema|sources|changes|lint`
 - 项目导入导出：`POST /api/projects/import`、`GET /api/projects/{project_id}/export`
 - 健康检查：`/health`
 
@@ -146,13 +153,17 @@ data/
     ├── ingest-cache.json
     ├── ingest-jobs/
     ├── research-jobs/
+    ├── change-jobs/
+    ├── schema.json
+    ├── schema.md
+    ├── raw/sources/
     ├── page-history/
     └── wiki/
 ```
 
 Markdown/JSON 是唯一事实来源，内存索引和图谱缓存均可重建。项目的普通删除只从项目列表移除并保留磁盘数据；应用创建的托管项目可在输入项目名确认后永久删除。绑定自定义外部目录的项目只能从列表移除。
 
-项目 ZIP 使用 `schemaVersion: 1`。导出包含 Wiki、对话、任务和历史；导入会创建新的托管项目，不覆盖现有项目。
+项目 ZIP 使用 `schemaVersion: 2`，并包含项目 Schema 与 Raw Sources；导出通过临时文件流式返回。导入兼容版本 1 和 2，版本 1 会补齐默认 Schema。导入始终创建新的托管项目，不覆盖现有项目。
 
 摄入测试语料位于 `examples/fixtures/`，不会复制进生产镜像。详细设计见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 

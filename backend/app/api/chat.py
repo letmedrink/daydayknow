@@ -43,10 +43,11 @@ async def chat_endpoint(
     agent = ChatAgent(global_store, file_store, wiki_store)
 
     async def event_stream():
+        assistant_message_id = None
         try:
             async for event in agent.chat_stream(req.message, conversation_id, history):
                 if event["type"] == "_complete":
-                    file_store.save_turn(
+                    saved = file_store.save_turn(
                         conversation_id,
                         req.message[:50],
                         {"role": "user", "content": req.message},
@@ -57,9 +58,10 @@ async def chat_endpoint(
                             "options": event["options"],
                         },
                     )
+                    assistant_message_id = saved["messages"][-1]["id"]
                     continue
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id, 'message_id': assistant_message_id})}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'error': str(exc)}, ensure_ascii=False)}\n\n"
 

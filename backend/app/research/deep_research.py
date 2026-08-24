@@ -19,11 +19,11 @@ from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from ..config import settings
-from ..storage import FileStore, WikiStore
-from ..storage.wiki_store import parse_frontmatter, slugify
+from ..storage import FileStore, ProjectSchemaStore, SourceStore, WikiStore
+from ..storage.wiki_store import _render_page, parse_frontmatter, slugify
 from ..llm import call_llm
 from ..ingest.pipeline import parse_file_blocks, parse_review_blocks
-from ..ingest.prompts import build_generation_prompt
+from ..ingest.prompts import build_schema_generation_prompt
 
 import logging
 log = logging.getLogger("research")
@@ -66,6 +66,19 @@ async def run_deep_research(
     if not search_results:
         raise RuntimeError("未获取到可用搜索结果，已停止研究，不会生成 Wiki")
     search_results = await _enrich_search_results(search_results)
+    source_store = SourceStore(file_store.data_dir)
+    research_source_ids = []
+    for index_number, result in enumerate(search_results):
+        source_text = str(result.get("content") or result.get("snippet") or "")
+        if not source_text.strip():
+            continue
+        record = source_store.put(
+            f"research-{result.get('citation_id', f'S{index_number + 1}')}.txt",
+            source_text.encode("utf-8"), source_text, 1,
+            {"url": result.get("url", ""), "title": result.get("title", ""), "kind": "web"},
+        )
+        result["source_id"] = record["id"]
+        research_source_ids.append(record["id"])
     await report("search", 0.3, f"找到 {len(search_results)} 条结果")
 
     # Step 3: 综合搜索结果
@@ -77,8 +90,17 @@ async def run_deep_research(
     pages = wiki_store.list_pages()
     index = "\n".join(f"- [{p['title']}] {p['path']}" for p in pages) if pages else "(知识库为空)"
 
-    generation_prompt = build_generation_prompt(
-        index, f"research-{slugify(topic)}.md", synthesis,
+    schema_bundle = ProjectSchemaStore(file_store.data_dir).get()
+    candidate_pages = wiki_store.hybrid_search(f"{topic}\n{synthesis[:4000]}", max_results=8)
+    existing = []
+    for candidate in candidate_pages:
+        page = wiki_store.read_page(candidate["path"])
+        if page:
+            existing.append(f"--- EXISTING PAGE: {candidate['path']} ---\n{page.get('rawBlock', '')}{page.get('body', '')}")
+    primary_source = research_source_ids[0] if research_source_ids else "research"
+    generation_prompt = build_schema_generation_prompt(
+        schema_bundle["config"], schema_bundle["instructions"], f"research-{slugify(topic)}.md",
+        primary_source, index, "\n\n".join(existing)[:80_000],
     ) + "\n\n研究内容中的 [S1]、[S2] 等来源编号必须保留在对应结论后，并在页面末尾列出引用来源。"
     generation = await call_llm(
         global_store,
@@ -91,18 +113,40 @@ async def run_deep_research(
     file_blocks, warnings = parse_file_blocks(generation)
 
     proposals = []
+    allowed_directories = {item["directory"] for item in schema_bundle["config"].get("pageTypes", []) if item.get("enabled", True)}
     for block in file_blocks:
         rel_path = block["path"]
         wiki_rel = rel_path[5:] if rel_path.startswith("wiki/") else rel_path
+        if wiki_rel in {"index.md", "log.md"}:
+            continue
+        if "/" not in wiki_rel or wiki_rel.split("/", 1)[0] not in allowed_directories:
+            warnings.append(f"页面 {wiki_rel} 不属于项目 Schema，已拒绝")
+            continue
 
         parsed = parse_frontmatter(block["content"])
+        content = block["content"]
+        if parsed["frontmatter"]:
+            values = parsed["frontmatter"].get("sources", [])
+            if isinstance(values, str):
+                values = [values]
+            parsed["frontmatter"]["sources"] = list(dict.fromkeys([*values, *research_source_ids]))
+            content = _render_page(parsed["frontmatter"], parsed["body"])
+        base_hash = wiki_store.page_sha256(wiki_rel)
+        previous_page = wiki_store.read_page(wiki_rel) if base_hash else None
         proposals.append({
             "path": wiki_rel,
-            "content": block["content"],
+            "content": content,
             "title": parsed["frontmatter"].get("title", wiki_rel.rsplit("/", 1)[-1].removesuffix(".md")) if parsed["frontmatter"] else wiki_rel.rsplit("/", 1)[-1].removesuffix(".md"),
             "type": parsed["frontmatter"].get("type", "other") if parsed["frontmatter"] else "other",
             "replaces_existing": (wiki_store.wiki_dir / wiki_rel).exists(),
-            "merge": True,
+            "merge": False,
+            "operation": "update" if base_hash else "create",
+            "baseSha256": base_hash,
+            "schemaVersion": schema_bundle["config"].get("revision", 1),
+            "sourceIds": research_source_ids,
+            "changeSummary": "基于 Deep Research 来源生成完整页面更新",
+            "addedClaims": [], "revisedClaims": [], "preservedClaims": [],
+            "previousContent": (previous_page.get("rawBlock", "") + previous_page.get("body", "")) if previous_page else "",
         })
 
     # Step 6: 解析 REVIEW 块
@@ -126,6 +170,8 @@ async def run_deep_research(
         "topic": topic,
         "search_queries": search_queries,
         "synthesis": synthesis,
+        "source_ids": research_source_ids,
+        "schema_version": schema_bundle["config"].get("revision", 1),
     }
 
 

@@ -29,20 +29,50 @@ REVIEW 块格式：
 
 import re
 import hashlib
+import time
 from pathlib import Path
 
-from ..storage import FileStore, WikiStore
-from ..storage.wiki_store import slugify, parse_frontmatter
+from ..storage import FileStore, ProjectSchemaStore, SourceStore, WikiStore
+from ..storage.wiki_store import _render_page, slugify, parse_frontmatter
 from ..llm import call_llm, get_llm_config
+from ..config import settings as app_settings
 from .file_parser import parse_file
 from .image_extractor import extract_images
 from .image_caption import caption_images
-from .prompts import build_generation_prompt
+from .prompts import build_schema_analysis_prompt, build_schema_generation_prompt
 
 import logging
 log = logging.getLogger("ingest")
 
-PIPELINE_VERSION = 2
+PIPELINE_VERSION = 3
+PARSER_VERSION = 1
+ANALYSIS_CHUNK_CHARS = 40_000
+
+
+def _chunk_source(content: str, limit: int = ANALYSIS_CHUNK_CHARS) -> list[str]:
+    """Split all source text without dropping the tail, preferring heading boundaries."""
+    if len(content) <= limit:
+        return [content]
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for block in re.split(r"(?=^#{1,6}\s|^--- (?:第|幻灯片))", content, flags=re.MULTILINE):
+        if not block:
+            continue
+        while len(block) > limit:
+            prefix, block = block[:limit], block[limit:]
+            if current:
+                chunks.append("".join(current))
+                current, size = [], 0
+            chunks.append(prefix)
+        if current and size + len(block) > limit:
+            chunks.append("".join(current))
+            current, size = [], 0
+        current.append(block)
+        size += len(block)
+    if current:
+        chunks.append("".join(current))
+    return chunks
 
 
 # ─── FILE/REVIEW 块解析 ──────────────────────────────────────
@@ -223,6 +253,9 @@ async def run_ingest_pipeline(
     auto_commit: bool = True,
     stage_dir: Path | None = None,
     custom_instructions: str = "",
+    schema_store: ProjectSchemaStore | None = None,
+    source_store: SourceStore | None = None,
+    detail_callback=None,
 ) -> dict:
     """执行完整的摄入流程。
 
@@ -232,6 +265,7 @@ async def run_ingest_pipeline(
         file_store: 文件存储
         wiki_store: wiki 存储
         progress_callback: 进度回调 async (step, progress, message) -> None
+        detail_callback: 详细链路回调 async (event) -> None
 
     Returns:
         {files_written: list[str], reviews: list[dict], warnings: list[str]}
@@ -241,31 +275,82 @@ async def run_ingest_pipeline(
         if progress_callback:
             await progress_callback(step, progress, message)
 
+    async def detail(stage: str, title: str, message: str = "", meta: list[dict] | None = None):
+        if detail_callback:
+            await detail_callback({
+                "stage": stage, "title": title, "message": message,
+                "meta": meta or [], "timestamp": int(time.time() * 1000),
+            })
+
     # Step 0: 解析文件
     await report("parse", 0.0, f"正在解析文件: {filename}")
+    extension = Path(filename).suffix.lower() or "无扩展名"
+    await detail("parse", "接收文档", "准备确定性解析", [
+        {"label": "格式", "value": extension},
+        {"label": "原件大小", "value": f"{len(content):,} bytes"},
+        {"label": "解析器版本", "value": f"v{PARSER_VERSION}"},
+    ])
+    parse_started = time.perf_counter()
     source_content = parse_file(filename, content)
     raw_source_content = source_content
+    physical_units = len(re.findall(r"^--- (?:第 \d+ 页|幻灯片 \d+) ---", source_content, re.MULTILINE))
+    await detail("parse", "文档解析完成", "已提取可分析文本", [
+        {"label": "解析器", "value": "PyMuPDF" if extension == ".pdf" else "python-pptx" if extension == ".pptx" else "python-docx" if extension == ".docx" else "UTF-8 文本"},
+        {"label": "文本字符", "value": f"{len(source_content):,}"},
+        {"label": "物理分页", "value": str(physical_units) if physical_units else "无；后续按字符预算分块"},
+        {"label": "耗时", "value": f"{(time.perf_counter() - parse_started) * 1000:.0f} ms"},
+    ])
 
     if source_content.startswith("[") and source_content.endswith("]"):
         return {"files_written": [], "reviews": [], "warnings": [source_content]}
 
+    schema_store = schema_store or ProjectSchemaStore(file_store.data_dir)
+    source_store = source_store or SourceStore(file_store.data_dir)
+    schema_bundle = schema_store.get()
+    schema_config = schema_bundle["config"]
+    source_record = source_store.put(filename, content, raw_source_content, PARSER_VERSION)
+    source_id = source_record["id"]
+    await detail("source", "Raw Source 已保存", "原件和解析文本使用内容哈希寻址", [
+        {"label": "source_id", "value": source_id},
+        {"label": "SHA-256", "value": str(source_record.get("sha256", ""))[:16] + "…"},
+    ])
+
     # Step 1: 缓存检查
     await report("cache", 0.1, "检查缓存...")
     cached = file_store.check_ingest_cache(filename, raw_source_content, PIPELINE_VERSION)
+    await detail("cache", "缓存检查", "命中则跳过模型调用；强制摄入会绕过命中", [
+        {"label": "结果", "value": "命中" if cached else "未命中"},
+        {"label": "force", "value": "是" if force else "否"},
+        {"label": "pipeline", "value": f"v{PIPELINE_VERSION}"},
+    ])
     if cached and not force:
         await report("cache", 1.0, "文件未变化，跳过摄入")
-        return {"files_written": cached, "reviews": [], "warnings": [], "cached": True}
+        return {"files_written": cached, "reviews": [], "warnings": [], "cached": True, "source_id": source_id}
 
     # Step 2: 图片提取
     await report("images", 0.15, "提取嵌入图片...")
     source_slug = slugify(filename.rsplit(".", 1)[0] if "." in filename else filename)
     media_dir = (stage_dir / "media" / source_slug) if stage_dir else (wiki_store.wiki_dir / "media" / source_slug)
     images = extract_images(filename, content, media_dir)
+    await detail("images", "媒体提取完成", "检查文档内嵌图片", [
+        {"label": "图片数量", "value": str(len(images))},
+    ])
 
     # Step 3: 图片描述
     if images:
         await report("images", 0.2, f"生成 {len(images)} 张图片的描述...")
+        multimodal_model = app_settings.MULTIMODAL_MODEL or global_store.get_settings().get("multimodalModel", "")
+        caption_started = time.perf_counter()
+        await detail("images", "图片描述计划", "按图片缓存逐张处理", [
+            {"label": "图片数量", "value": str(len(images))},
+            {"label": "视觉模型", "value": multimodal_model or "未配置；跳过模型描述"},
+            {"label": "执行方式", "value": "串行，已有哈希缓存会复用"},
+        ])
         images = await caption_images(images, file_store, global_store, media_dir)
+        await detail("images", "图片描述完成", "图片说明已注入后续分析上下文", [
+            {"label": "生成说明", "value": str(sum(1 for image in images if image.get("caption")))},
+            {"label": "耗时", "value": f"{time.perf_counter() - caption_started:.1f} s"},
+        ])
 
     # 注入图片描述到源内容
     if images:
@@ -274,29 +359,89 @@ async def run_ingest_pipeline(
     # Step 4: 构建 wiki 索引
     pages = wiki_store.list_pages()
     llm_config = get_llm_config(global_store)
+    model_meta = [
+        {"label": "模型", "value": str(llm_config.get("model") or "未配置")},
+        {"label": "协议", "value": str(llm_config.get("api_mode") or "openai")},
+        {"label": "Max Tokens", "value": str(llm_config.get("max_tokens", 4096))},
+    ]
+    await detail("index", "Wiki 上下文已加载", "构建候选页检索索引", [
+        {"label": "现有页面", "value": str(len(pages))},
+        {"label": "Schema revision", "value": str(schema_config.get("revision", 1))},
+    ])
     index_lines = []
     for p in pages:
         index_lines.append(f"- [{p['title']}] {p['path']}")
     index = "\n".join(index_lines) if index_lines else "(知识库为空)"
 
-    # Step 5: LLM 分析
+    # Step 5: LLM 分块分析，覆盖完整文档
     await report("analyze", 0.25, "LLM 分析文档内容...")
     instruction_block = f"\n\n用户补充要求：\n{custom_instructions.strip()}" if custom_instructions.strip() else ""
-    analysis = await call_llm(
-        global_store,
-        "你是一位专业的知识分析专家。用中文输出分析结果。",
-        f"请分析以下文档：\n\n{source_content[:80000]}{instruction_block}",
-    )
+    source_chunks = _chunk_source(source_content)
+    await detail("analyze", "分析分块计划", "标题边界优先，超长内容按字符预算切分", [
+        {"label": "分块数量", "value": str(len(source_chunks))},
+        {"label": "单块预算", "value": f"{ANALYSIS_CHUNK_CHARS:,} 字符"},
+        {"label": "执行方式", "value": "依次调用，保证分析顺序"},
+    ])
+    analyses = []
+    analysis_prompt = build_schema_analysis_prompt(schema_config, schema_bundle["instructions"])
+    for index_number, chunk in enumerate(source_chunks):
+        call_started = time.perf_counter()
+        await detail("analyze", f"分析分块 {index_number + 1}/{len(source_chunks)}", "正在调用文本模型", [
+            *model_meta, {"label": "输入字符", "value": f"{len(chunk):,}"},
+        ])
+        analysis_text = await call_llm(
+            global_store,
+            analysis_prompt,
+            f"来源 {source_id}，文档分块 {index_number + 1}/{len(source_chunks)}：\n\n{chunk}{instruction_block}",
+        )
+        analyses.append(analysis_text)
+        await detail("analyze", f"分块 {index_number + 1} 分析完成", "模型响应已收齐", [
+            {"label": "输出字符", "value": f"{len(analysis_text):,}"},
+            {"label": "耗时", "value": f"{time.perf_counter() - call_started:.1f} s"},
+        ])
+    analysis = "\n\n".join(f"## 分块 {index_number + 1}\n{text}" for index_number, text in enumerate(analyses))
     await report("analyze", 0.4, "分析完成，准备生成 wiki 页面...")
 
-    # Step 6: LLM 生成
+    # Step 6: 检索候选旧页并让 LLM 基于完整旧正文生成完整目标页面
     await report("generate", 0.45, "LLM 生成 wiki 页面...")
-    generation_prompt = build_generation_prompt(index, filename, source_content[:80000]) + instruction_block
+    candidate_query = f"{filename}\n{analysis[:6000]}"
+    candidates = wiki_store.hybrid_search(candidate_query, max_results=8)
+    existing_parts = []
+    existing_size = 0
+    for candidate in candidates:
+        page = wiki_store.read_page(candidate["path"])
+        if not page:
+            continue
+        raw = page.get("rawBlock", "") + page.get("body", "")
+        if existing_size + len(raw) > 80_000:
+            break
+        existing_parts.append(f"--- EXISTING PAGE: {candidate['path']} ---\n{raw}")
+        existing_size += len(raw)
+    await detail("retrieve", "候选旧页面检索完成", "这些页面正文会作为增量更新上下文", [
+        {"label": "候选数量", "value": str(len(existing_parts))},
+        {"label": "正文字符", "value": f"{existing_size:,}"},
+        {"label": "候选路径", "value": "、".join(candidate["path"] for candidate in candidates[:8]) or "无"},
+    ])
+    generation_prompt = build_schema_generation_prompt(
+        schema_config, schema_bundle["instructions"], filename, source_id, index, "\n\n".join(existing_parts),
+    ) + instruction_block
+    source_evidence = source_content if len(source_content) <= 60_000 else "完整文档已分块分析；以下为覆盖全部分块的分析结果。"
+    generation_started = time.perf_counter()
+    await detail("generate", "生成完整 Wiki 提案", "正在调用文本模型；此阶段通常耗时最长", [
+        *model_meta,
+        {"label": "分析字符", "value": f"{len(analysis):,}"},
+        {"label": "来源字符", "value": f"{len(source_content):,}"},
+        {"label": "旧页上下文", "value": f"{existing_size:,} 字符"},
+    ])
     generation = await call_llm(
         global_store,
         generation_prompt,
-        f"分析结果：\n\n{analysis}\n\n---\n\n源文档内容：\n\n{source_content[:80000]}",
+        f"分析结果：\n\n{analysis}\n\n---\n\n源文档内容：\n\n{source_evidence}",
     )
+    await detail("generate", "Wiki 提案生成完成", "模型响应已收齐，开始解析 FILE/REVIEW 块", [
+        {"label": "输出字符", "value": f"{len(generation):,}"},
+        {"label": "耗时", "value": f"{time.perf_counter() - generation_started:.1f} s"},
+    ])
     await report("generate", 0.6, "生成完成，处理文件...")
 
     # Step 7: 解析 FILE 块
@@ -305,6 +450,8 @@ async def run_ingest_pipeline(
 
     files_written = []
     proposals = []
+    allowed_directories = {item["directory"] for item in schema_config.get("pageTypes", []) if item.get("enabled", True)}
+    allowed_directories.add("sources")
     for block in file_blocks:
         rel_path = block["path"]
         # LLM 生成的路径可能带 wiki/ 前缀，需要去掉
@@ -313,15 +460,40 @@ async def run_ingest_pipeline(
         if wiki_rel.startswith("wiki/"):
             wiki_rel = wiki_rel[5:]  # 去掉 wiki/ 前缀
 
+        if wiki_rel in {"index.md", "log.md"}:
+            continue
+        if "/" not in wiki_rel or wiki_rel.split("/", 1)[0] not in allowed_directories:
+            parse_warnings.append(f'FILE 块路径 "{rel_path}" 不属于项目 Schema，已拒绝。')
+            continue
+
         content_text = block["content"]
         parsed = parse_frontmatter(content_text)
+        if parsed["frontmatter"]:
+            sources = parsed["frontmatter"].get("sources", [])
+            if isinstance(sources, str):
+                sources = [sources]
+            parsed["frontmatter"]["sources"] = list(dict.fromkeys([*sources, source_id]))
+            content_text = _render_page(parsed["frontmatter"], parsed["body"])
+            parsed = parse_frontmatter(content_text)
+        base_hash = wiki_store.page_sha256(wiki_rel)
+        previous_page = wiki_store.read_page(wiki_rel) if base_hash else None
+        previous_content = (previous_page.get("rawBlock", "") + previous_page.get("body", "")) if previous_page else ""
         proposals.append({
             "path": wiki_rel,
             "content": content_text,
             "title": parsed["frontmatter"].get("title", Path(wiki_rel).stem) if parsed["frontmatter"] else Path(wiki_rel).stem,
             "type": parsed["frontmatter"].get("type", "other") if parsed["frontmatter"] else "other",
             "replaces_existing": (wiki_store.wiki_dir / wiki_rel).exists(),
-            "merge": True,
+            "merge": False,
+            "operation": "update" if base_hash else "create",
+            "baseSha256": base_hash,
+            "schemaVersion": schema_config.get("revision", schema_config.get("version", 1)),
+            "sourceIds": [source_id],
+            "changeSummary": "基于新来源生成完整页面更新",
+            "addedClaims": [],
+            "revisedClaims": [],
+            "preservedClaims": [],
+            "previousContent": previous_content,
         })
         files_written.append(f"wiki/{wiki_rel}")
 
@@ -333,6 +505,13 @@ async def run_ingest_pipeline(
     # Step 9: 解析 REVIEW 块
     await report("reviews", 0.85, "处理审阅项...")
     review_items = parse_review_blocks(generation, source_path=f"wiki/sources/{source_slug}.md")
+    await detail("review", "提案解析完成", "所有 AI 修改仍需人工接受后才会写入正式 Wiki", [
+        {"label": "页面提案", "value": str(len(proposals))},
+        {"label": "新建", "value": str(sum(1 for page in proposals if page.get("operation") == "create"))},
+        {"label": "更新", "value": str(sum(1 for page in proposals if page.get("operation") == "update"))},
+        {"label": "审阅项", "value": str(len(review_items))},
+        {"label": "解析警告", "value": str(len(parse_warnings))},
+    ])
     if auto_commit:
         wiki_store.commit_pages(proposals)
         if review_items:
@@ -351,6 +530,7 @@ async def run_ingest_pipeline(
         "status": "accepted" if auto_commit else "awaiting_review",
         "proposals": proposals,
         "source_hash": hashlib.sha256(raw_source_content.encode("utf-8")).hexdigest(),
+        "source_id": source_id,
         "pipeline_version": PIPELINE_VERSION,
         "media_files": [img["rel_path"] for img in images],
         "generation_info": {
@@ -358,11 +538,13 @@ async def run_ingest_pipeline(
             "model": llm_config.get("model", ""),
             "temperature": llm_config.get("temperature", 0.7),
             "source_characters": len(raw_source_content),
-            "characters_sent": min(len(source_content), 80000),
-            "source_truncated": len(source_content) > 80000,
+            "characters_sent": len(source_content),
+            "source_truncated": False,
+            "analysis_chunks": len(source_chunks),
             "existing_wiki_pages": len(pages),
             "images_processed": len(images),
             "pipeline_version": PIPELINE_VERSION,
+            "schema_version": schema_config.get("revision", schema_config.get("version", 1)),
             "custom_instructions": custom_instructions.strip(),
         },
     }

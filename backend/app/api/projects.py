@@ -1,6 +1,7 @@
 """项目管理 API。"""
 import io
 import json
+import os
 import shutil
 import stat
 import tempfile
@@ -10,7 +11,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 from typing import Optional
 from ..dependencies import get_project_store
@@ -27,7 +29,7 @@ class DeleteProjectDataRequest(BaseModel):
     confirmation: str
 
 
-PROJECT_SCHEMA_VERSION = 1
+PROJECT_SCHEMA_VERSION = 2
 MAX_IMPORT_BYTES = 500 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 20_000
 
@@ -52,13 +54,15 @@ async def export_project(project_id: str, project_store=Depends(get_project_stor
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     project_dir = Path(project["path"])
-    buffer = io.BytesIO()
+    temp = tempfile.NamedTemporaryFile(prefix="llmwiki-export-", suffix=".zip", delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
     manifest = {
         "schemaVersion": PROJECT_SCHEMA_VERSION,
         "name": project["name"],
         "exportedAt": datetime.now(timezone.utc).isoformat(),
     }
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("llmwiki-project.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         for path in project_dir.rglob("*"):
             if path.is_file() and not path.is_symlink():
@@ -66,10 +70,12 @@ async def export_project(project_id: str, project_store=Depends(get_project_stor
                 if any(part.startswith(".") and part != ".llmwiki-project.json" for part in rel.parts):
                     continue
                 archive.write(path, Path("project") / rel)
-    buffer.seek(0)
     encoded_name = quote(f"{project['name'] or 'llmwiki-project'}.zip")
     disposition = f"attachment; filename=llmwiki-project.zip; filename*=UTF-8''{encoded_name}"
-    return StreamingResponse(buffer, media_type="application/zip", headers={"Content-Disposition": disposition})
+    return FileResponse(
+        temp_path, media_type="application/zip", headers={"Content-Disposition": disposition},
+        background=BackgroundTask(os.unlink, temp_path),
+    )
 
 
 @router.post("/import")
@@ -91,7 +97,7 @@ async def import_project(
         manifest = json.loads(package.read("llmwiki-project.json"))
     except (KeyError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail="缺少有效的 llmwiki-project.json") from exc
-    if manifest.get("schemaVersion") != PROJECT_SCHEMA_VERSION:
+    if manifest.get("schemaVersion") not in {1, PROJECT_SCHEMA_VERSION}:
         raise HTTPException(status_code=400, detail=f"不支持的数据版本: {manifest.get('schemaVersion')}")
 
     with tempfile.TemporaryDirectory(prefix="llmwiki-import-") as temp_name:
@@ -122,6 +128,10 @@ async def import_project(
             Path(project["path"], ".llmwiki-project.json").write_text(
                 json.dumps({"schemaVersion": PROJECT_SCHEMA_VERSION}, indent=2), encoding="utf-8",
             )
+            from ..storage.schema_store import ProjectSchemaStore
+            from ..storage.source_store import SourceStore
+            ProjectSchemaStore(project["path"]).ensure()
+            SourceStore(project["path"])
         except BaseException:
             project_store.delete_project_data(project["id"], project["name"])
             raise

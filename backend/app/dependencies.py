@@ -3,6 +3,8 @@
 from fastapi import HTTPException, Path, Request
 
 from .storage.file_store import FileStore
+from .storage.schema_store import ProjectSchemaStore
+from .storage.source_store import SourceStore
 from .storage.wiki_store import WikiStore
 
 
@@ -30,6 +32,7 @@ def get_project_file_store(request: Request, project_id: str = Path(...)) -> Fil
     if not getattr(file_store, "_ingest_recovered", False):
         file_store.recover_ingest_jobs()
         file_store.recover_research_jobs()
+        file_store.recover_change_jobs()
         file_store._ingest_recovered = True
     return file_store
 
@@ -42,5 +45,16 @@ def get_project_wiki_store(request: Request, project_id: str = Path(...)) -> Wik
     if not getattr(file_store, "_ingest_recovered", False):
         file_store.recover_ingest_jobs()
         file_store.recover_research_jobs()
+        file_store.recover_change_jobs()
         file_store._ingest_recovered = True
     return wiki_store
+
+
+def get_project_schema_store(request: Request, project_id: str = Path(...)) -> ProjectSchemaStore:
+    project_dir = get_project_dir(request, project_id)
+    return ProjectSchemaStore(project_dir)
+
+
+def get_project_source_store(request: Request, project_id: str = Path(...)) -> SourceStore:
+    project_dir = get_project_dir(request, project_id)
+    return SourceStore(project_dir)

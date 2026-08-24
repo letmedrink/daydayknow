@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { fetchSettings, updateSettings, testLLMConnection } from '../lib/api';
+import { fetchProjectSchema, fetchSettings, updateProjectSchema, updateSettings, testLLMConnection } from '../lib/api';
 import type { LLMProvider } from '../types';
+import { useProject } from '../contexts/ProjectContext';
 
 interface ProviderPreset {
   name: string;
@@ -109,28 +110,41 @@ const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
 };
 
 export function SettingsPanel() {
+  const { activeProjectId } = useProject();
   const [providers, setProviders] = useState<Record<string, LLMProvider>>({});
   const [activeId, setActiveId] = useState('');
   const [testResults, setTestResults] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [multimodalModel, setMultimodalModel] = useState('');
+  const [ingestDetailedProgress, setIngestDetailedProgress] = useState(false);
   const [retrievalMode, setRetrievalMode] = useState<'lexical' | 'hybrid'>('lexical');
   const [searchProvider, setSearchProvider] = useState('');
   const [searchApiKey, setSearchApiKey] = useState('');
   const [searchHasKey, setSearchHasKey] = useState(false);
   const [clearSearchKey, setClearSearchKey] = useState(false);
+  const [schemaText, setSchemaText] = useState('');
+  const [schemaInstructions, setSchemaInstructions] = useState('');
 
   useEffect(() => {
     fetchSettings().then((s) => {
       setProviders(s.llmProviders || {});
       setActiveId(s.activeProviderId || '');
       setMultimodalModel(s.multimodalModel || '');
+      setIngestDetailedProgress(Boolean(s.ingestDetailedProgress));
       setRetrievalMode(s.retrievalConfig?.mode || 'lexical');
       setSearchProvider(s.searchApiConfig?.provider || '');
       setSearchHasKey(Boolean(s.searchApiConfig?.has_api_key));
     }).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    fetchProjectSchema(activeProjectId).then((schema) => {
+      setSchemaText(JSON.stringify(schema.config, null, 2));
+      setSchemaInstructions(schema.instructions || '');
+    }).catch((error) => setTestResults({ _saved: `读取项目 Schema 失败: ${error.message}` }));
+  }, [activeProjectId]);
 
   const handleAddProvider = (presetKey: string) => {
     const preset = PROVIDER_PRESETS[presetKey];
@@ -192,6 +206,7 @@ export function SettingsPanel() {
         llmProviders: providers,
         activeProviderId: activeId,
         multimodalModel,
+        ingestDetailedProgress,
         retrievalConfig: { mode: retrievalMode, candidateLimit: 12, rerankLimit: 5 },
         searchApiConfig: {
           provider: searchProvider,
@@ -199,6 +214,9 @@ export function SettingsPanel() {
           clear_api_key: clearSearchKey,
         },
       });
+      if (activeProjectId && schemaText) {
+        await updateProjectSchema({ config: JSON.parse(schemaText), instructions: schemaInstructions }, activeProjectId);
+      }
       setTestResults({ _saved: '已保存' });
     } catch (e: any) {
       setTestResults({ _saved: `保存失败: ${e.message}` });
@@ -394,6 +412,15 @@ export function SettingsPanel() {
         );
       })}
 
+      <div style={styles.section}>🧩 摄入过程可观测性</div>
+      <label style={styles.toggleRow}>
+        <input type="checkbox" checked={ingestDetailedProgress} onChange={(event) => setIngestDetailedProgress(event.target.checked)} />
+        <span>
+          <strong style={styles.toggleTitle}>显示详细摄入链路</strong>
+          <span style={styles.toggleDesc}>实时显示解析器、物理分页、分析分块、模型、候选页检索、调用耗时和提案统计。不会显示 API Key、Prompt 或文档正文。</span>
+        </span>
+      </label>
+
       {/* 多模态模型配置 */}
       <div style={styles.section}>🖼️ 多模态模型（图片描述）</div>
       <p style={styles.desc}>用于 PDF/PPTX/DOCX 中提取的图片自动生成描述，复用当前激活模型的 API Key 和 Base URL</p>
@@ -431,6 +458,13 @@ export function SettingsPanel() {
           {searchHasKey && <button style={styles.clearKeyBtn} type="button" onClick={() => { setSearchApiKey(''); setSearchHasKey(false); setClearSearchKey(true); }}>清除已保存 Key</button>}
         </div>
       </div>
+
+      <div style={styles.section}>🧭 项目 Schema</div>
+      <p style={styles.desc}>此配置仅属于当前项目。结构化规则用于校验页面类型和 Lint，自然语言说明会注入摄入、研究和回写流程。</p>
+      <label style={styles.label}>schema.json</label>
+      <textarea style={styles.schemaEditor} value={schemaText} onChange={(event) => setSchemaText(event.target.value)} spellCheck={false} />
+      <label style={styles.label}>schema.md</label>
+      <textarea style={styles.instructionsEditor} value={schemaInstructions} onChange={(event) => setSchemaInstructions(event.target.value)} />
 
       <div style={styles.footer}>
         <button style={styles.saveBtn} onClick={handleSave} disabled={saving}>
@@ -533,6 +567,9 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   chipActive: { backgroundColor: '#7a8b8f', color: '#f5f0eb', borderColor: '#7a8b8f' },
+  toggleRow: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: 12, marginBottom: 16, border: '1px solid #c8bfb5', borderRadius: 8, backgroundColor: '#eae3db', cursor: 'pointer' },
+  toggleTitle: { display: 'block', fontSize: 13, color: '#4a443d', marginBottom: 3 },
+  toggleDesc: { display: 'block', fontSize: 12, lineHeight: 1.5, color: '#8a8078' },
   footer: {
     display: 'flex',
     alignItems: 'center',
@@ -553,4 +590,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   testResult: { fontSize: 13, color: '#6b5b4f' },
   clearKeyBtn: { padding: '4px 8px', border: '1px solid #c97a6b', borderRadius: 4, color: '#c97a6b', background: 'transparent', cursor: 'pointer', fontSize: 11 },
+  schemaEditor: { width: '100%', minHeight: 260, boxSizing: 'border-box', padding: 10, border: '1px solid #c8bfb5', borderRadius: 4, backgroundColor: '#f5f0eb', color: '#4a443d', fontFamily: 'monospace', fontSize: 12, margin: '6px 0 12px' },
+  instructionsEditor: { width: '100%', minHeight: 180, boxSizing: 'border-box', padding: 10, border: '1px solid #c8bfb5', borderRadius: 4, backgroundColor: '#f5f0eb', color: '#4a443d', fontSize: 13, lineHeight: 1.5, marginTop: 6 },
 };

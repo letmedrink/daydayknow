@@ -8,6 +8,7 @@
 - 图谱洞察包含"意外连接"和"知识缺口"两类分析
 """
 
+import hashlib
 import os
 import re
 import tempfile
@@ -19,6 +20,11 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+
+
+class StalePageError(RuntimeError):
+    """Raised when a staged proposal targets a page that changed after generation."""
+
 
 
 # ─── Frontmatter 解析 ──────────────────────────────────────────
@@ -143,7 +149,8 @@ class WikiStore:
     """Wiki .md 文件的读写和图谱构建。"""
 
     def __init__(self, data_dir: str | Path):
-        self.wiki_dir = Path(data_dir) / "wiki"
+        self.data_dir = Path(data_dir)
+        self.wiki_dir = self.data_dir / "wiki"
         self.wiki_dir.mkdir(parents=True, exist_ok=True)
         self._index_lock = threading.RLock()
         self._fingerprints: dict[str, tuple[int, int]] = {}
@@ -153,6 +160,16 @@ class WikiStore:
         self._generation = 0
         self._graph_generation = -1
         self._graph_cache: Optional[dict] = None
+
+    def page_type_dirs(self) -> dict[str, str]:
+        try:
+            from .schema_store import ProjectSchemaStore
+            config = ProjectSchemaStore(self.data_dir).get()["config"]
+            mapping = {item["id"]: item["directory"] for item in config["pageTypes"]}
+            mapping.setdefault("query", "queries")
+            return mapping
+        except (OSError, ValueError, KeyError):
+            return dict(PAGE_TYPE_DIRS)
 
     def _safe_page_path(self, rel_path: str) -> Optional[Path]:
         """Resolve a Markdown path while preventing traversal outside wiki/."""
@@ -168,7 +185,7 @@ class WikiStore:
 
     def get_page_path(self, page_type: str, slug: str) -> Path:
         """获取页面的完整路径。"""
-        subdir = PAGE_TYPE_DIRS.get(page_type, "entities")
+        subdir = self.page_type_dirs().get(page_type, "entities")
         return self.wiki_dir / subdir / f"{slug}.md"
 
     def read_page(self, rel_path: str) -> Optional[dict]:
@@ -390,6 +407,11 @@ class WikiStore:
                 target = self._safe_page_path(rel_path)
                 if not target:
                     raise ValueError(f"非法 Wiki 页面路径: {rel_path}")
+                base_hash = page.get("baseSha256")
+                if base_hash is not None:
+                    current = hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else None
+                    if current != base_hash:
+                        raise StalePageError(f"页面 {rel_path} 已在审阅期间发生变化，请重新生成")
                 snapshots[rel_path] = target.read_bytes() if target.exists() else None
             try:
                 for page in pages:
@@ -431,6 +453,39 @@ class WikiStore:
             for rel_path in committed:
                 self._invalidate_path(rel_path)
         return committed
+
+    def page_sha256(self, rel_path: str) -> str | None:
+        target = self._safe_page_path(rel_path)
+        if not target or not target.exists():
+            return None
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+
+    def render_index_content(self) -> str:
+        """Render the deterministic index without mutating the Wiki."""
+        pages = [page for page in self.list_pages() if page["path"] not in {"index.md", "log.md"}]
+        groups: dict[str, list[dict]] = {}
+        for page in pages:
+            groups.setdefault(page.get("type", "other"), []).append(page)
+        lines = ["# Wiki 索引", ""]
+        for page_type in sorted(groups):
+            lines.extend([f"## {page_type}", ""]
+            )
+            for page in sorted(groups[page_type], key=lambda item: str(item.get("title", ""))):
+                lines.append(f"- [[{page['title']}]] — `{page['path']}`")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def rebuild_index_page(self) -> str:
+        """Deterministically rebuild wiki/index.md from page metadata."""
+        return self.write_raw_page("index.md", self.render_index_content())
+
+    def append_log(self, operation: str, title: str) -> str:
+        today = datetime.now().strftime("%Y-%m-%d")
+        entry = f"## [{today}] {operation} | {title}"
+        target = self._safe_page_path("log.md")
+        assert target is not None
+        existing = target.read_text(encoding="utf-8") if target.exists() else "# Wiki 日志\n"
+        return self.write_raw_page("log.md", existing.rstrip() + "\n\n" + entry + "\n")
 
     def snapshot_pages(self, rel_paths: list[str]) -> dict[str, bytes | None]:
         with self._index_lock:
@@ -770,11 +825,12 @@ class WikiStore:
         """Incrementally refresh cached pages from path/mtime/size fingerprints."""
         with self._index_lock:
             current: dict[str, tuple[Path, tuple[int, int]]] = {}
+            directory_types = {directory: page_type for page_type, directory in self.page_type_dirs().items()}
             for md_file in self.wiki_dir.rglob("*.md"):
                 rel = md_file.relative_to(self.wiki_dir)
                 # index.md/log.md live at the Wiki root; normal pages must remain
                 # inside one of the recognized type directories.
-                if len(rel.parts) > 1 and _dir_to_type(rel.parts[0]) is None:
+                if len(rel.parts) > 1 and rel.parts[0] not in directory_types:
                     continue
                 stat = md_file.stat()
                 current[str(rel)] = (md_file, (stat.st_mtime_ns, stat.st_size))
@@ -797,7 +853,7 @@ class WikiStore:
                 meta = {
                     "name": md_file.stem,
                     "path": rel_path,
-                    "type": _dir_to_type(rel.parts[0]) if len(rel.parts) > 1 else frontmatter.get("type", "other"),
+                    "type": directory_types.get(rel.parts[0], frontmatter.get("type", "other")) if len(rel.parts) > 1 else frontmatter.get("type", "other"),
                     "title": title,
                 }
                 title_tokens = set(_tokenize(str(title).lower()))

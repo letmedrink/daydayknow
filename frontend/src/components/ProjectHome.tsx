@@ -8,15 +8,19 @@ export function ProjectHome({ onEnter }: { onEnter: () => void }) {
   const [newName, setNewName] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
   const importRef = useRef<HTMLInputElement>(null);
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
     setCreating(true);
+    setError('');
     try {
       await createProject(newName.trim());
       setNewName('');
       setShowCreate(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setCreating(false);
     }
@@ -97,6 +101,7 @@ export function ProjectHome({ onEnter }: { onEnter: () => void }) {
                 {creating ? '创建中...' : '创建'}
               </button>
             </div>
+            {error && <p role="alert" style={styles.error}>{error}</p>}
           </div>
         ) : (
           <button style={styles.newBtn} onClick={() => setShowCreate(true)}>
@@ -175,4 +180,5 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: theme.radius.sm, backgroundColor: theme.accent,
     color: '#fff', cursor: 'pointer',
   },
+  error: { margin: '10px 0 0', color: '#b42318', fontSize: 12, lineHeight: 1.5 },
 };

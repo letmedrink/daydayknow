@@ -88,7 +88,7 @@ export function useChat(projectId?: string) {
             assistantContent += chunk;
             setStreamingContent(assistantContent);
           },
-          onDone: (cid) => {
+          onDone: (cid, messageId) => {
             closeThinking();
             // 剥离 OPTIONS 行（后端也会剥离，但流式内容已包含）
             const cleanContent = assistantContent.replace(/\n?OPTIONS:\s*.+$/m, '').trim();
@@ -97,7 +97,7 @@ export function useChat(projectId?: string) {
             const refs = currentRefsRef.current;
             setMessages((prev) => [
               ...prev,
-              { role: 'assistant', content: cleanContent, references: refs.length > 0 ? refs : undefined },
+              { id: messageId, role: 'assistant', content: cleanContent, references: refs.length > 0 ? refs : undefined },
             ]);
             setStreamingContent('');
             setIsLoading(false);

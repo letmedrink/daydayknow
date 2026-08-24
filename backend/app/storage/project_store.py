@@ -61,6 +61,10 @@ class ProjectStore:
                        "queries", "synthesis", "findings", "thesis",
                        "methodology", "media"]:
             (wiki_dir / subdir).mkdir(parents=True, exist_ok=True)
+        from .schema_store import ProjectSchemaStore
+        from .source_store import SourceStore
+        ProjectSchemaStore(project_dir).ensure()
+        SourceStore(project_dir)
         (project_dir / "conversations").mkdir(parents=True, exist_ok=True)
         metadata_path = project_dir / ".llmwiki-project.json"
         if not metadata_path.exists():
