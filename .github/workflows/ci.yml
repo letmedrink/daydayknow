@@ -17,6 +17,8 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: pytest -q
         working-directory: backend
+      - run: python -m benchmarks run --mode offline --output-dir /tmp/llmwiki-benchmark-results
+        working-directory: backend
 
   frontend:
     runs-on: ubuntu-latest

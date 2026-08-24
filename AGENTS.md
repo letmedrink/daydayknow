@@ -266,6 +266,7 @@ VITE_API_URL=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5173
 ```bash
 cd backend
 ./.venv/bin/python -m pytest -q
+./.venv/bin/python -m benchmarks run --mode offline
 ```
 
 ### 前端

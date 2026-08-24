@@ -194,6 +194,26 @@ npm run test:e2e
 docker compose config
 ```
 
+### Benchmark
+
+Benchmark 使用独立临时目录和 CC0 合成知识域，不读取或修改真实项目。离线套件通过固定模型输出覆盖 10 个场景，可重复验证摄入增量更新、来源绑定、Schema、问答、Lint、事务回滚和检索质量：
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m benchmarks run --mode offline
+```
+
+在线套件调用设置页中已经保存的 Provider，默认温度为 0；只有显式指定 Provider 才会产生模型请求和费用：
+
+```bash
+python -m benchmarks run --mode live --provider-id <provider-id>
+python -m benchmarks run --mode live --provider-id <provider-id> --judge-provider-id <judge-provider-id>
+python -m benchmarks compare benchmark-results/<baseline>.json benchmark-results/<candidate>.json
+```
+
+JSON 和 Markdown 报告默认写入被 Git 忽略的 `benchmark-results/`。确定性断言决定通过状态；可选 Judge 的 groundedness、完整性和冲突处理分数只作分析，不作为默认门禁。在线总分按摄入 70%、问答 20%、Lint 10% 加权，路径安全、稳定来源、Schema 合规和 review-before-commit 始终是独立硬门禁。固定离线结果见 [`docs/benchmarks/offline-baseline.md`](docs/benchmarks/offline-baseline.md)。所有时间数据均为单机、单进程合成结果，不是生产 SLA。
+
 ## 当前边界
 
 - 面向可信本机单用户，不包含认证、授权和租户隔离；不要直接暴露到公网。

@@ -467,13 +467,19 @@ JSON 的 read-modify-write 还持有进程内路径锁，避免并发任务读�
 
 ### 11.3 工程验证
 
-- 41 项后端 Pytest
-- 12 项前端 Vitest
+- 52 项后端 Pytest
+- 15 项前端 Vitest
 - Strict TypeScript Check
 - Production Build
-- Playwright 端到端冒烟测试
+- 2 项 Playwright 端到端冒烟测试
 - Docker Compose 配置验证
 - 前端主入口构建产物约 434 KB，图谱等页面独立懒加载
+
+### 11.4 可重复质量 Benchmark
+
+项目另外提供 10 场景的 CC0 合成评测集，按照摄入 70%、问答 20%、Lint 10% 组织。离线模式使用固定模型输出，验证 Schema 合规、Raw Source 去重、旧事实保留、冲突审阅、长文尾部覆盖、Prompt Injection 路径防护、引用召回、过期提案拒绝和多页回滚；在线模式显式选择真实 Provider，用同一套场景比较模型质量、调用次数和端到端延迟。
+
+确定性断言负责通过状态，可选 Judge 只提供 groundedness、完整性和冲突处理评分。路径安全、稳定来源、Schema 合规与 review-before-commit 是不可被加权分数抵消的硬门禁。报告同时记录 Dataset、Git、Pipeline、Parser 和模型版本，结果默认写入被 Git 忽略的目录。该 Benchmark 用于回归和模型比较，不代表生产 SLA。
 
 ## 12. 项目中的难点
 

@@ -30,5 +30,6 @@ backend/data-e2e/
 *.log
 playwright-report/
 test-results/
+benchmark-results/
 tmp/
 temp/
